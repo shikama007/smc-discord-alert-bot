@@ -1,10 +1,10 @@
-name: Binance Market Data Test
+name: SMC Bot Connection Test
 
 on:
   workflow_dispatch:
 
 jobs:
-  market-test:
+  test:
     runs-on: ubuntu-latest
 
     steps:
@@ -16,8 +16,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Install requests
+        run: pip install requests pandas
 
-      - name: Run Binance Market Test
+      - name: Run Market + Discord Test
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python market_test.py
