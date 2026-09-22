@@ -1,7 +1,7 @@
 import requests
 import pandas as pd
 
-BASE_URL = "https://api.binance.com/api/v3/klines"
+BASE_URL = "https://api1.binance.com/api/v3/klines"
 
 
 def get_candles(symbol, interval, limit=10):
