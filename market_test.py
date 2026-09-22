@@ -17,19 +17,15 @@ def get_candles(symbol, interval, limit=50):
     data = response.json()
 
     columns = [
-        "open_time",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "close_time",
-        "quote_volume",
-        "trades",
-        "taker_buy_base",
-        "taker_buy_quote"
-    ]
-
+    "open_time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "close_time",
+    "quote_volume"
+]
     df = pd.DataFrame(data, columns=columns)
 
     for column in ["open", "high", "low", "close", "volume"]:
