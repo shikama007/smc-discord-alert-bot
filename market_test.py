@@ -1,7 +1,7 @@
 import requests
 import pandas as pd
 
-BASE_URL = "https://api1.binance.com/api/v3/klines"
+BASE_URL = "https://api.mexc.com/api/v3/klines"
 
 
 def get_candles(symbol, interval, limit=10):
@@ -27,25 +27,25 @@ def get_candles(symbol, interval, limit=10):
         "quote_volume",
         "trades",
         "taker_buy_base",
-        "taker_buy_quote",
-        "ignore"
+        "taker_buy_quote"
     ]
 
     df = pd.DataFrame(data, columns=columns)
 
     for column in ["open", "high", "low", "close", "volume"]:
-        df[column] = df[column].astype(float)
+        df[column] = pd.to_numeric(df[column])
+
+    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
 
     return df
 
 
-btc_1h = get_candles("BTCUSDT", "1h")
-btc_15m = get_candles("BTCUSDT", "15m")
+print("🚀 MEXC Market Data Test Starting...")
 
-print("\n===== BTC/USDT 1H =====")
-print(btc_1h[["open", "high", "low", "close", "volume"]].tail())
+btc_1h = get_candles("BTCUSDT", "1h", 10)
 
-print("\n===== BTC/USDT 15M =====")
-print(btc_15m[["open", "high", "low", "close", "volume"]].tail())
+print("\n📊 BTC/USDT 1H Candles:")
+print(btc_1h[["open_time", "open", "high", "low", "close", "volume"]])
 
-print("\n✅ Binance market data connection successful!")
+print("\n✅ MEXC API connection successful!")
