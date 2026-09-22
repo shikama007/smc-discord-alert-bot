@@ -17,9 +17,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install requests
-        run: pip install requests
+        run: pip install requests pandas
 
-      - name: Run Discord Test
+      - name: Run Market + Discord Test
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python test_bot.py
+        run: python market_test.py
