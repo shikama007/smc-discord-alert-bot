@@ -1,4 +1,4 @@
-name: SMC Bot Connection Test
+name: MEXC market alert
 
 on:
   workflow_dispatch:
