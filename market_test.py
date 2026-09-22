@@ -44,7 +44,7 @@ def get_candles(symbol, interval, limit=50):
 print("🚀 MEXC Market Data Test Starting...")
 
 # 1H data
-btc_1h = get_candles("BTCUSDT", "1h", 50)
+btc_1h = get_candles("BTCUSDT", "60m", 50)
 
 # 15M data
 btc_15m = get_candles("BTCUSDT", "15m", 50)
