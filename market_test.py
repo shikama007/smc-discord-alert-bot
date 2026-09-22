@@ -1,7 +1,9 @@
 import requests
 import pandas as pd
+import os
 
 BASE_URL = "https://api.mexc.com/api/v3/klines"
+WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
 
 def get_candles(symbol, interval, limit=50):
@@ -17,15 +19,16 @@ def get_candles(symbol, interval, limit=50):
     data = response.json()
 
     columns = [
-    "open_time",
-    "open",
-    "high",
-    "low",
-    "close",
-    "volume",
-    "close_time",
-    "quote_volume"
-]
+        "open_time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "close_time",
+        "quote_volume"
+    ]
+
     df = pd.DataFrame(data, columns=columns)
 
     for column in ["open", "high", "low", "close", "volume"]:
@@ -37,26 +40,31 @@ def get_candles(symbol, interval, limit=50):
     return df
 
 
-print("🚀 MEXC Market Data Test Starting...")
+print("🚀 MEXC + Discord Test Starting...")
 
-# 1H data
 btc_1h = get_candles("BTCUSDT", "60m", 50)
-
-# 15M data
 btc_15m = get_candles("BTCUSDT", "15m", 50)
 
-print("\n📊 BTC/USDT 1H - Last 5 Candles")
-print(
-    btc_1h[
-        ["open_time", "open", "high", "low", "close", "volume"]
-    ].tail(5)
+current_price = btc_15m["close"].iloc[-1]
+
+message = {
+    "content": (
+        "🚀 **SMC BOT CONNECTION SUCCESS!**\n\n"
+        "📡 Exchange: `MEXC`\n"
+        "💰 BTC/USDT: `$%.2f`\n"
+        "⏱ 1H + 15M Data: `ONLINE`\n"
+        "🤖 Discord Webhook: `CONNECTED`"
+        % current_price
+    )
+}
+
+response = requests.post(
+    WEBHOOK_URL,
+    json=message,
+    timeout=10
 )
 
-print("\n📊 BTC/USDT 15M - Last 5 Candles")
-print(
-    btc_15m[
-        ["open_time", "open", "high", "low", "close", "volume"]
-    ].tail(5)
-)
+response.raise_for_status()
 
-print("\n✅ MEXC 1H + 15M market data working!")
+print("✅ MEXC market data working!")
+print("✅ Discord message sent successfully!")
