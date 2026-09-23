@@ -6,7 +6,7 @@ import os
 # SETTINGS
 # =========================================================
 
-SYMBOL = "BTC_USDT"
+SYMBOL = "LTC_USDT"
 TIMEFRAME = "Min60"
 CANDLE_LIMIT = 200
 
