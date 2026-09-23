@@ -1,5 +1,6 @@
 import requests
 import pandas as pd
+import os
 
 # ==========================================
 # SETTINGS
@@ -10,6 +11,9 @@ TIMEFRAME = "Min60"
 CANDLE_LIMIT = 100
 
 BASE_URL = "https://api.mexc.com/api/v1/contract/kline"
+
+# Discord Webhook from GitHub Secret
+WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
 
 # ==========================================
@@ -53,6 +57,7 @@ def get_candles(symbol, interval, limit=100):
         "close",
         "volume"
     ]:
+
         df[column] = pd.to_numeric(
             df[column],
             errors="coerce"
@@ -111,6 +116,7 @@ def find_swings(df, strength=2):
             and
             current_high > right_highs.max()
         ):
+
             swing_highs.append({
                 "index": i,
                 "price": current_high,
@@ -123,6 +129,7 @@ def find_swings(df, strength=2):
             and
             current_low < right_lows.min()
         ):
+
             swing_lows.append({
                 "index": i,
                 "price": current_low,
@@ -156,10 +163,7 @@ def analyze_structure(
     last_low = swing_lows[-1]
     previous_low = swing_lows[-2]
 
-    # --------------------------------------
     # Higher High / Lower High
-    # --------------------------------------
-
     higher_high = (
         last_high["price"]
         > previous_high["price"]
@@ -170,10 +174,7 @@ def analyze_structure(
         < previous_high["price"]
     )
 
-    # --------------------------------------
     # Higher Low / Lower Low
-    # --------------------------------------
-
     higher_low = (
         last_low["price"]
         > previous_low["price"]
@@ -184,10 +185,7 @@ def analyze_structure(
         < previous_low["price"]
     )
 
-    # --------------------------------------
-    # BULLISH STRUCTURE
-    # --------------------------------------
-
+    # Bullish
     if higher_high and higher_low:
 
         return {
@@ -197,10 +195,7 @@ def analyze_structure(
             "choch": "NONE"
         }
 
-    # --------------------------------------
-    # BEARISH STRUCTURE
-    # --------------------------------------
-
+    # Bearish
     if lower_high and lower_low:
 
         return {
@@ -210,16 +205,49 @@ def analyze_structure(
             "choch": "NONE"
         }
 
-    # --------------------------------------
-    # RANGE / MIXED
-    # --------------------------------------
-
+    # Range / Mixed
     return {
         "trend": "RANGE",
         "structure": "MIXED",
         "bos": "NONE",
         "choch": "NONE"
     }
+
+
+# ==========================================
+# SEND DISCORD MESSAGE
+# ==========================================
+
+def send_discord_message(message):
+
+    if not WEBHOOK_URL:
+
+        raise RuntimeError(
+            "DISCORD_WEBHOOK_URL secret not found!"
+        )
+
+    payload = {
+        "content": message
+    }
+
+    response = requests.post(
+        WEBHOOK_URL,
+        json=payload,
+        timeout=10
+    )
+
+    if response.status_code not in (200, 204):
+
+        print(
+            f"❌ Discord Error: "
+            f"{response.status_code}"
+        )
+
+        print(response.text)
+
+        response.raise_for_status()
+
+    print("✅ Discord message sent successfully!")
 
 
 # ==========================================
@@ -331,4 +359,36 @@ print(
 
 print("==============================")
 
-print("\n✅ STEP 1 MARKET STRUCTURE TEST COMPLETE!")
+
+# ==========================================
+# DISCORD ALERT
+# ==========================================
+
+discord_message = (
+    "📊 **LTCUSDT.P — 1H MARKET STRUCTURE**\n\n"
+
+    f"📌 Symbol: `{SYMBOL}`\n"
+    f"⏱️ Timeframe: `1H`\n\n"
+
+    f"📈 Trend: **{structure['trend']}**\n"
+    f"🏗️ Structure: **{structure['structure']}**\n"
+    f"🚀 BOS: **{structure['bos']}**\n"
+    f"🔄 CHOCH: **{structure['choch']}**\n\n"
+
+    f"🔺 Swing Highs: `{len(swing_highs)}`\n"
+    f"🔻 Swing Lows: `{len(swing_lows)}`\n\n"
+
+    "🤖 **SMC Engine — Step 1**\n"
+    "✅ MEXC Futures Data Online"
+)
+
+
+print("\n📡 Sending result to Discord...")
+
+send_discord_message(discord_message)
+
+
+print(
+    "\n✅ STEP 1 MARKET STRUCTURE "
+    "TEST + DISCORD COMPLETE!"
+)
