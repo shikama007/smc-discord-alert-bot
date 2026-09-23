@@ -10,17 +10,31 @@ import os
 SYMBOL = "BTC_USDT"
 
 TIMEFRAME = "Min60"
+
 CANDLE_LIMIT = 150
 
 BASE_URL = "https://api.mexc.com/api/v1/contract/kline"
 
 SWING_STRENGTH = 2
 
-# EQH / EQL tolerance
+# Equal High / Equal Low tolerance
 # 0.001 = 0.1%
 EQUAL_TOLERANCE = 0.001
 
+# Number of recent closed candles used
+# to build the MAJOR dealing range
+MAJOR_RANGE_CANDLES = 100
+
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
+
+
+# =========================================================
+# DISPLAY SYMBOL
+# =========================================================
+
+DISPLAY_SYMBOL = (
+    SYMBOL.replace("_USDT", "USDT") + ".P"
+)
 
 
 # =========================================================
@@ -42,6 +56,7 @@ def get_candles(symbol, interval, limit=150):
     result = response.json()
 
     if not result.get("success"):
+
         raise RuntimeError(
             f"MEXC API Error: {result}"
         )
@@ -49,12 +64,19 @@ def get_candles(symbol, interval, limit=150):
     data = result["data"]
 
     df = pd.DataFrame({
+
         "time": data["time"],
+
         "open": data["open"],
+
         "high": data["high"],
+
         "low": data["low"],
+
         "close": data["close"],
+
         "volume": data["vol"]
+
     })
 
     for column in [
@@ -77,7 +99,11 @@ def get_candles(symbol, interval, limit=150):
 
     df = df.dropna()
 
-    df = df.tail(limit).reset_index(drop=True)
+    df = df.tail(limit)
+
+    df = df.reset_index(
+        drop=True
+    )
 
     return df
 
@@ -86,9 +112,13 @@ def get_candles(symbol, interval, limit=150):
 # FIND CONFIRMED SWINGS
 # =========================================================
 
-def find_swings(df, strength=2):
+def find_swings(
+    df,
+    strength=2
+):
 
     swing_highs = []
+
     swing_lows = []
 
     for i in range(
@@ -96,8 +126,15 @@ def find_swings(df, strength=2):
         len(df) - strength
     ):
 
-        current_high = df.loc[i, "high"]
-        current_low = df.loc[i, "low"]
+        current_high = df.loc[
+            i,
+            "high"
+        ]
+
+        current_low = df.loc[
+            i,
+            "low"
+        ]
 
         left_highs = df.loc[
             i-strength:i-1,
@@ -119,7 +156,10 @@ def find_swings(df, strength=2):
             "low"
         ]
 
+        # -----------------------------------------
         # Swing High
+        # -----------------------------------------
+
         if (
             current_high > left_highs.max()
             and
@@ -127,12 +167,24 @@ def find_swings(df, strength=2):
         ):
 
             swing_highs.append({
+
                 "index": i,
-                "price": float(current_high),
-                "time": df.loc[i, "time"]
+
+                "price": float(
+                    current_high
+                ),
+
+                "time": df.loc[
+                    i,
+                    "time"
+                ]
+
             })
 
+        # -----------------------------------------
         # Swing Low
+        # -----------------------------------------
+
         if (
             current_low < left_lows.min()
             and
@@ -140,37 +192,65 @@ def find_swings(df, strength=2):
         ):
 
             swing_lows.append({
+
                 "index": i,
-                "price": float(current_low),
-                "time": df.loc[i, "time"]
+
+                "price": float(
+                    current_low
+                ),
+
+                "time": df.loc[
+                    i,
+                    "time"
+                ]
+
             })
 
-    return swing_highs, swing_lows
+    return (
+        swing_highs,
+        swing_lows
+    )
 
 
 # =========================================================
-# HH / HL / LH / LL
+# LABEL HH / HL / LH / LL
 # =========================================================
 
-def label_swings(swing_highs, swing_lows):
+def label_swings(
+    swing_highs,
+    swing_lows
+):
 
     high_labels = []
+
     low_labels = []
 
-    # -----------------------------
+    # -----------------------------------------
     # Highs
-    # -----------------------------
+    # -----------------------------------------
 
-    for i in range(1, len(swing_highs)):
+    for i in range(
+        1,
+        len(swing_highs)
+    ):
 
         current = swing_highs[i]
+
         previous = swing_highs[i - 1]
 
-        if current["price"] > previous["price"]:
+        if (
+            current["price"]
+            >
+            previous["price"]
+        ):
 
             label = "HH"
 
-        elif current["price"] < previous["price"]:
+        elif (
+            current["price"]
+            <
+            previous["price"]
+        ):
 
             label = "LH"
 
@@ -179,26 +259,43 @@ def label_swings(swing_highs, swing_lows):
             label = "EQH"
 
         high_labels.append({
+
             "label": label,
+
             "price": current["price"],
+
             "time": current["time"],
+
             "index": current["index"]
+
         })
 
-    # -----------------------------
+    # -----------------------------------------
     # Lows
-    # -----------------------------
+    # -----------------------------------------
 
-    for i in range(1, len(swing_lows)):
+    for i in range(
+        1,
+        len(swing_lows)
+    ):
 
         current = swing_lows[i]
+
         previous = swing_lows[i - 1]
 
-        if current["price"] > previous["price"]:
+        if (
+            current["price"]
+            >
+            previous["price"]
+        ):
 
             label = "HL"
 
-        elif current["price"] < previous["price"]:
+        elif (
+            current["price"]
+            <
+            previous["price"]
+        ):
 
             label = "LL"
 
@@ -207,13 +304,21 @@ def label_swings(swing_highs, swing_lows):
             label = "EQL"
 
         low_labels.append({
+
             "label": label,
+
             "price": current["price"],
+
             "time": current["time"],
+
             "index": current["index"]
+
         })
 
-    return high_labels, low_labels
+    return (
+        high_labels,
+        low_labels
+    )
 
 
 # =========================================================
@@ -225,28 +330,60 @@ def determine_initial_bias(
     swing_lows
 ):
 
-    if len(swing_highs) < 2:
-        return "UNKNOWN"
+    if (
+        len(swing_highs) < 2
+        or
+        len(swing_lows) < 2
+    ):
 
-    if len(swing_lows) < 2:
         return "UNKNOWN"
 
     last_high = swing_highs[-1]["price"]
+
     previous_high = swing_highs[-2]["price"]
 
     last_low = swing_lows[-1]["price"]
+
     previous_low = swing_lows[-2]["price"]
 
-    higher_high = last_high > previous_high
-    higher_low = last_low > previous_low
+    higher_high = (
+        last_high
+        >
+        previous_high
+    )
 
-    lower_high = last_high < previous_high
-    lower_low = last_low < previous_low
+    higher_low = (
+        last_low
+        >
+        previous_low
+    )
 
-    if higher_high and higher_low:
+    lower_high = (
+        last_high
+        <
+        previous_high
+    )
+
+    lower_low = (
+        last_low
+        <
+        previous_low
+    )
+
+    if (
+        higher_high
+        and
+        higher_low
+    ):
+
         return "BULLISH"
 
-    if lower_high and lower_low:
+    if (
+        lower_high
+        and
+        lower_low
+    ):
+
         return "BEARISH"
 
     return "RANGE"
@@ -264,40 +401,28 @@ def detect_historical_events(
 
     events = []
 
-    # -----------------------------------------------------
-    # We only use CLOSED candles
-    # -----------------------------------------------------
-
     closed_df = df.iloc[:-1].copy()
 
     if closed_df.empty:
-        return events
 
-    # -----------------------------------------------------
-    # Start with structural bias from available history
-    # -----------------------------------------------------
+        return events
 
     bias = determine_initial_bias(
         swing_highs,
         swing_lows
     )
 
-    # -----------------------------------------------------
-    # Track which swing levels were already broken
-    # -----------------------------------------------------
-
     broken_high_indices = set()
-    broken_low_indices = set()
 
-    # -----------------------------------------------------
-    # Process candles chronologically
-    # -----------------------------------------------------
+    broken_low_indices = set()
 
     for candle_index in range(
         len(closed_df)
     ):
 
-        candle = closed_df.iloc[candle_index]
+        candle = closed_df.iloc[
+            candle_index
+        ]
 
         close_price = float(
             candle["close"]
@@ -305,19 +430,36 @@ def detect_historical_events(
 
         candle_time = candle["time"]
 
-        # =================================================
-        # FIND MOST RECENT CONFIRMED SWING HIGH
-        # BEFORE CURRENT CANDLE
-        # =================================================
+        # -----------------------------------------
+        # Confirmed highs available before candle
+        # -----------------------------------------
 
         available_highs = [
-            swing for swing in swing_highs
-            if swing["index"] < candle_index
+
+            swing
+
+            for swing in swing_highs
+
+            if swing["index"]
+            <
+            candle_index
+
         ]
 
+        # -----------------------------------------
+        # Confirmed lows available before candle
+        # -----------------------------------------
+
         available_lows = [
-            swing for swing in swing_lows
-            if swing["index"] < candle_index
+
+            swing
+
+            for swing in swing_lows
+
+            if swing["index"]
+            <
+            candle_index
+
         ]
 
         # =================================================
@@ -328,19 +470,25 @@ def detect_historical_events(
 
             latest_high = available_highs[-1]
 
-            high_index = latest_high["index"]
+            high_index = latest_high[
+                "index"
+            ]
 
-            high_price = latest_high["price"]
+            high_price = latest_high[
+                "price"
+            ]
 
             if (
-                high_index not in broken_high_indices
-                and
-                close_price > high_price
-            ):
+                high_index
+                not in
+                broken_high_indices
 
-                # -----------------------------
-                # Determine BOS / CHOCH
-                # -----------------------------
+                and
+
+                close_price
+                >
+                high_price
+            ):
 
                 if bias == "BEARISH":
 
@@ -351,12 +499,21 @@ def detect_historical_events(
                     event_type = "BOS"
 
                 events.append({
+
                     "event": event_type,
+
                     "direction": "BULLISH",
+
                     "price": high_price,
+
                     "time": candle_time,
-                    "level_type": "SWING HIGH",
-                    "candle_close": close_price
+
+                    "level_type":
+                        "SWING HIGH",
+
+                    "candle_close":
+                        close_price
+
                 })
 
                 broken_high_indices.add(
@@ -373,19 +530,25 @@ def detect_historical_events(
 
             latest_low = available_lows[-1]
 
-            low_index = latest_low["index"]
+            low_index = latest_low[
+                "index"
+            ]
 
-            low_price = latest_low["price"]
+            low_price = latest_low[
+                "price"
+            ]
 
             if (
-                low_index not in broken_low_indices
-                and
-                close_price < low_price
-            ):
+                low_index
+                not in
+                broken_low_indices
 
-                # -----------------------------
-                # Determine BOS / CHOCH
-                # -----------------------------
+                and
+
+                close_price
+                <
+                low_price
+            ):
 
                 if bias == "BULLISH":
 
@@ -396,12 +559,21 @@ def detect_historical_events(
                     event_type = "BOS"
 
                 events.append({
+
                     "event": event_type,
+
                     "direction": "BEARISH",
+
                     "price": low_price,
+
                     "time": candle_time,
-                    "level_type": "SWING LOW",
-                    "candle_close": close_price
+
+                    "level_type":
+                        "SWING LOW",
+
+                    "candle_close":
+                        close_price
+
                 })
 
                 broken_low_indices.add(
@@ -423,20 +595,27 @@ def get_current_structure(
     events
 ):
 
-    # -----------------------------------------------------
-    # If historical events exist,
-    # latest event gives latest directional change.
-    # -----------------------------------------------------
+    # -----------------------------------------
+    # Current bias
+    # -----------------------------------------
 
     if events:
 
         latest_event = events[-1]
 
-        if latest_event["direction"] == "BULLISH":
+        if (
+            latest_event["direction"]
+            ==
+            "BULLISH"
+        ):
 
             bias = "BULLISH"
 
-        elif latest_event["direction"] == "BEARISH":
+        elif (
+            latest_event["direction"]
+            ==
+            "BEARISH"
+        ):
 
             bias = "BEARISH"
 
@@ -451,58 +630,97 @@ def get_current_structure(
             swing_lows
         )
 
-    # -----------------------------------------------------
-    # Recent structural labels
-    # -----------------------------------------------------
+    # -----------------------------------------
+    # Latest high structure
+    # -----------------------------------------
 
     last_high = None
-    last_low = None
 
     if len(swing_highs) >= 2:
 
-        previous = swing_highs[-2]["price"]
-        current = swing_highs[-1]["price"]
+        previous = swing_highs[
+            -2
+        ]["price"]
+
+        current = swing_highs[
+            -1
+        ]["price"]
 
         if current > previous:
+
             label = "HH"
+
         elif current < previous:
+
             label = "LH"
+
         else:
+
             label = "EQH"
 
         last_high = {
+
             "label": label,
+
             "price": current,
-            "time": swing_highs[-1]["time"]
+
+            "time":
+                swing_highs[-1]["time"]
+
         }
+
+    # -----------------------------------------
+    # Latest low structure
+    # -----------------------------------------
+
+    last_low = None
 
     if len(swing_lows) >= 2:
 
-        previous = swing_lows[-2]["price"]
-        current = swing_lows[-1]["price"]
+        previous = swing_lows[
+            -2
+        ]["price"]
+
+        current = swing_lows[
+            -1
+        ]["price"]
 
         if current > previous:
+
             label = "HL"
+
         elif current < previous:
+
             label = "LL"
+
         else:
+
             label = "EQL"
 
         last_low = {
+
             "label": label,
+
             "price": current,
-            "time": swing_lows[-1]["time"]
+
+            "time":
+                swing_lows[-1]["time"]
+
         }
 
     return {
+
         "bias": bias,
+
         "last_high": last_high,
+
         "last_low": last_low
+
     }
 
 
 # =========================================================
-# EQUAL HIGH / LOW
+# EQUAL PRICE CHECK
 # =========================================================
 
 def prices_are_equal(
@@ -519,6 +737,7 @@ def prices_are_equal(
     ) / 2
 
     if average == 0:
+
         return False
 
     percentage_difference = (
@@ -527,15 +746,23 @@ def prices_are_equal(
 
     return (
         percentage_difference
-        <= EQUAL_TOLERANCE
+        <=
+        EQUAL_TOLERANCE
     )
 
 
-def find_equal_highs(swing_highs):
+# =========================================================
+# EQH
+# =========================================================
+
+def find_equal_highs(
+    swing_highs
+):
 
     levels = []
 
     if len(swing_highs) < 2:
+
         return levels
 
     for i in range(
@@ -543,7 +770,10 @@ def find_equal_highs(swing_highs):
     ):
 
         first = swing_highs[i]
-        second = swing_highs[i + 1]
+
+        second = swing_highs[
+            i + 1
+        ]
 
         if prices_are_equal(
             first["price"],
@@ -551,20 +781,34 @@ def find_equal_highs(swing_highs):
         ):
 
             level = (
+
                 first["price"]
-                + second["price"]
+
+                +
+
+                second["price"]
+
             ) / 2
 
-            levels.append(level)
+            levels.append(
+                level
+            )
 
     return levels
 
 
-def find_equal_lows(swing_lows):
+# =========================================================
+# EQL
+# =========================================================
+
+def find_equal_lows(
+    swing_lows
+):
 
     levels = []
 
     if len(swing_lows) < 2:
+
         return levels
 
     for i in range(
@@ -572,7 +816,10 @@ def find_equal_lows(swing_lows):
     ):
 
         first = swing_lows[i]
-        second = swing_lows[i + 1]
+
+        second = swing_lows[
+            i + 1
+        ]
 
         if prices_are_equal(
             first["price"],
@@ -580,17 +827,24 @@ def find_equal_lows(swing_lows):
         ):
 
             level = (
+
                 first["price"]
-                + second["price"]
+
+                +
+
+                second["price"]
+
             ) / 2
 
-            levels.append(level)
+            levels.append(
+                level
+            )
 
     return levels
 
 
 # =========================================================
-# LIQUIDITY
+# LIQUIDITY ANALYSIS
 # =========================================================
 
 def analyze_liquidity(
@@ -603,37 +857,45 @@ def analyze_liquidity(
         df["close"].iloc[-1]
     )
 
-    # -----------------------------------------------------
-    # BSL
-    # -----------------------------------------------------
+    # -----------------------------------------
+    # Buy-side liquidity
+    # -----------------------------------------
 
     bsl = []
 
     for swing in swing_highs[-10:]:
 
-        if swing["price"] > current_price:
+        if (
+            swing["price"]
+            >
+            current_price
+        ):
 
             bsl.append(
                 swing["price"]
             )
 
-    # -----------------------------------------------------
-    # SSL
-    # -----------------------------------------------------
+    # -----------------------------------------
+    # Sell-side liquidity
+    # -----------------------------------------
 
     ssl = []
 
     for swing in swing_lows[-10:]:
 
-        if swing["price"] < current_price:
+        if (
+            swing["price"]
+            <
+            current_price
+        ):
 
             ssl.append(
                 swing["price"]
             )
 
-    # -----------------------------------------------------
+    # -----------------------------------------
     # EQH / EQL
-    # -----------------------------------------------------
+    # -----------------------------------------
 
     eqh = find_equal_highs(
         swing_highs
@@ -643,9 +905,9 @@ def analyze_liquidity(
         swing_lows
     )
 
-    # -----------------------------------------------------
+    # -----------------------------------------
     # PDH / PDL
-    # -----------------------------------------------------
+    # -----------------------------------------
 
     temp_df = df.copy()
 
@@ -653,9 +915,12 @@ def analyze_liquidity(
         temp_df["time"].dt.date
     )
 
-    dates = temp_df["date"].unique()
+    dates = temp_df[
+        "date"
+    ].unique()
 
     pdh = None
+
     pdl = None
 
     if len(dates) >= 2:
@@ -663,28 +928,482 @@ def analyze_liquidity(
         previous_date = dates[-2]
 
         previous_day = temp_df[
-            temp_df["date"] == previous_date
+            temp_df["date"]
+            ==
+            previous_date
         ]
 
         if not previous_day.empty:
 
             pdh = float(
-                previous_day["high"].max()
+                previous_day["high"]
+                .max()
             )
 
             pdl = float(
-                previous_day["low"].min()
+                previous_day["low"]
+                .min()
             )
 
     return {
-        "current_price": current_price,
+
+        "current_price":
+            current_price,
+
         "bsl": bsl,
+
         "ssl": ssl,
+
         "eqh": eqh,
+
         "eql": eql,
+
         "pdh": pdh,
+
         "pdl": pdl
+
     }
+
+
+# =========================================================
+# MAJOR DEALING RANGE
+# =========================================================
+
+def analyze_major_range(
+    df,
+    swing_highs,
+    swing_lows
+):
+
+    # -----------------------------------------
+    # Use CLOSED candles only
+    # -----------------------------------------
+
+    closed_df = df.iloc[:-1].copy()
+
+    if closed_df.empty:
+
+        return {
+
+            "status":
+                "NOT ENOUGH DATA",
+
+            "high": None,
+
+            "low": None,
+
+            "equilibrium": None,
+
+            "position_percent": None,
+
+            "zone": "UNKNOWN"
+
+        }
+
+    lookback = min(
+        MAJOR_RANGE_CANDLES,
+        len(closed_df)
+    )
+
+    range_start_index = (
+        len(closed_df)
+        -
+        lookback
+    )
+
+    range_df = closed_df.iloc[
+        range_start_index:
+    ]
+
+    # -----------------------------------------
+    # Only confirmed swings inside range
+    # -----------------------------------------
+
+    valid_highs = [
+
+        swing
+
+        for swing in swing_highs
+
+        if swing["index"]
+        <
+        len(closed_df)
+
+        and
+
+        swing["index"]
+        >=
+        range_start_index
+
+    ]
+
+    valid_lows = [
+
+        swing
+
+        for swing in swing_lows
+
+        if swing["index"]
+        <
+        len(closed_df)
+
+        and
+
+        swing["index"]
+        >=
+        range_start_index
+
+    ]
+
+    # -----------------------------------------
+    # Prefer confirmed swing extremes
+    # -----------------------------------------
+
+    if valid_highs:
+
+        range_high = max(
+            swing["price"]
+            for swing in valid_highs
+        )
+
+    else:
+
+        range_high = float(
+            range_df["high"].max()
+        )
+
+    if valid_lows:
+
+        range_low = min(
+            swing["price"]
+            for swing in valid_lows
+        )
+
+    else:
+
+        range_low = float(
+            range_df["low"].min()
+        )
+
+    # -----------------------------------------
+    # Equilibrium
+    # -----------------------------------------
+
+    equilibrium = (
+        range_high
+        +
+        range_low
+    ) / 2
+
+    range_size = (
+        range_high
+        -
+        range_low
+    )
+
+    current_price = float(
+        df["close"].iloc[-1]
+    )
+
+    if range_size <= 0:
+
+        return {
+
+            "status":
+                "INVALID RANGE",
+
+            "high":
+                range_high,
+
+            "low":
+                range_low,
+
+            "equilibrium":
+                equilibrium,
+
+            "position_percent":
+                None,
+
+            "zone":
+                "UNKNOWN"
+
+        }
+
+    position_percent = (
+
+        (
+            current_price
+            -
+            range_low
+        )
+
+        /
+
+        range_size
+
+    ) * 100
+
+    if (
+        current_price
+        >
+        equilibrium
+    ):
+
+        zone = "PREMIUM"
+
+    elif (
+        current_price
+        <
+        equilibrium
+    ):
+
+        zone = "DISCOUNT"
+
+    else:
+
+        zone = "EQUILIBRIUM"
+
+    return {
+
+        "status": "OK",
+
+        "high":
+            range_high,
+
+        "low":
+            range_low,
+
+        "equilibrium":
+            equilibrium,
+
+        "position_percent":
+            position_percent,
+
+        "zone":
+            zone
+
+    }
+
+
+# =========================================================
+# LOCAL DEALING RANGE
+# =========================================================
+
+def analyze_local_range(
+    df,
+    swing_highs,
+    swing_lows
+):
+
+    current_price = float(
+        df["close"].iloc[-1]
+    )
+
+    if (
+        not swing_highs
+        or
+        not swing_lows
+    ):
+
+        return {
+
+            "status":
+                "NOT ENOUGH DATA",
+
+            "high": None,
+
+            "low": None,
+
+            "equilibrium": None,
+
+            "position_percent": None,
+
+            "zone": "UNKNOWN"
+
+        }
+
+    # -----------------------------------------
+    # Latest confirmed swing high / low
+    # -----------------------------------------
+
+    range_high = float(
+        swing_highs[-1]["price"]
+    )
+
+    range_low = float(
+        swing_lows[-1]["price"]
+    )
+
+    if range_high <= range_low:
+
+        return {
+
+            "status":
+                "INVALID RANGE",
+
+            "high":
+                range_high,
+
+            "low":
+                range_low,
+
+            "equilibrium":
+                None,
+
+            "position_percent":
+                None,
+
+            "zone":
+                "UNKNOWN"
+
+        }
+
+    equilibrium = (
+        range_high
+        +
+        range_low
+    ) / 2
+
+    range_size = (
+        range_high
+        -
+        range_low
+    )
+
+    position_percent = (
+
+        (
+            current_price
+            -
+            range_low
+        )
+
+        /
+
+        range_size
+
+    ) * 100
+
+    if (
+        current_price
+        >
+        equilibrium
+    ):
+
+        zone = "PREMIUM"
+
+    elif (
+        current_price
+        <
+        equilibrium
+    ):
+
+        zone = "DISCOUNT"
+
+    else:
+
+        zone = "EQUILIBRIUM"
+
+    return {
+
+        "status":
+            "OK",
+
+        "high":
+            range_high,
+
+        "low":
+            range_low,
+
+        "equilibrium":
+            equilibrium,
+
+        "position_percent":
+            position_percent,
+
+        "zone":
+            zone
+
+    }
+
+
+# =========================================================
+# PREMIUM / DISCOUNT ALIGNMENT
+# =========================================================
+
+def determine_alignment(
+    bias,
+    major_zone,
+    local_zone
+):
+
+    # -----------------------------------------
+    # Bullish
+    # -----------------------------------------
+
+    if bias == "BULLISH":
+
+        if (
+            major_zone
+            ==
+            "DISCOUNT"
+            and
+            local_zone
+            ==
+            "DISCOUNT"
+        ):
+
+            return "ALIGNED"
+
+        if (
+            major_zone
+            ==
+            "PREMIUM"
+            and
+            local_zone
+            ==
+            "PREMIUM"
+        ):
+
+            return "NOT ALIGNED"
+
+        return "MIXED"
+
+    # -----------------------------------------
+    # Bearish
+    # -----------------------------------------
+
+    if bias == "BEARISH":
+
+        if (
+            major_zone
+            ==
+            "PREMIUM"
+            and
+            local_zone
+            ==
+            "PREMIUM"
+        ):
+
+            return "ALIGNED"
+
+        if (
+            major_zone
+            ==
+            "DISCOUNT"
+            and
+            local_zone
+            ==
+            "DISCOUNT"
+        ):
+
+            return "NOT ALIGNED"
+
+        return "MIXED"
+
+    return "NO CLEAR BIAS"
+
+
 # =========================================================
 # PREMIUM / DISCOUNT ENGINE
 # =========================================================
@@ -696,160 +1415,57 @@ def analyze_premium_discount(
     bias
 ):
 
-    current_price = float(
-        df["close"].iloc[-1]
+    major = analyze_major_range(
+        df,
+        swing_highs,
+        swing_lows
     )
 
-    # -----------------------------------------------------
-    # Need at least one confirmed high and low
-    # -----------------------------------------------------
-
-    if not swing_highs or not swing_lows:
-
-        return {
-            "status": "NOT ENOUGH DATA",
-            "range_high": None,
-            "range_low": None,
-            "equilibrium": None,
-            "premium_level": None,
-            "discount_level": None,
-            "current_price": current_price,
-            "position_percent": None,
-            "alignment": "UNKNOWN"
-        }
-
-    # -----------------------------------------------------
-    # Latest confirmed swing high / low
-    # -----------------------------------------------------
-
-    latest_high = swing_highs[-1]
-    latest_low = swing_lows[-1]
-
-    range_high = float(
-        latest_high["price"]
+    local = analyze_local_range(
+        df,
+        swing_highs,
+        swing_lows
     )
 
-    range_low = float(
-        latest_low["price"]
-    )
+    if (
+        major["status"]
+        !=
+        "OK"
+        or
+        local["status"]
+        !=
+        "OK"
+    ):
 
-    # -----------------------------------------------------
-    # Make sure high > low
-    # -----------------------------------------------------
-
-    if range_high <= range_low:
-
-        return {
-            "status": "INVALID RANGE",
-            "range_high": range_high,
-            "range_low": range_low,
-            "equilibrium": None,
-            "premium_level": None,
-            "discount_level": None,
-            "current_price": current_price,
-            "position_percent": None,
-            "alignment": "UNKNOWN"
-        }
-
-    # -----------------------------------------------------
-    # 50% Equilibrium
-    # -----------------------------------------------------
-
-    equilibrium = (
-        range_high + range_low
-    ) / 2
-
-    # -----------------------------------------------------
-    # Range size
-    # -----------------------------------------------------
-
-    range_size = (
-        range_high - range_low
-    )
-
-    # -----------------------------------------------------
-    # Current position inside range
-    #
-    # 0%   = Range Low
-    # 50%  = Equilibrium
-    # 100% = Range High
-    # -----------------------------------------------------
-
-    position_percent = (
-        (current_price - range_low)
-        / range_size
-    ) * 100
-
-    # -----------------------------------------------------
-    # Premium / Discount
-    # -----------------------------------------------------
-
-    if current_price > equilibrium:
-
-        zone = "PREMIUM"
-
-    elif current_price < equilibrium:
-
-        zone = "DISCOUNT"
+        alignment = "UNKNOWN"
 
     else:
 
-        zone = "EQUILIBRIUM"
-
-    # -----------------------------------------------------
-    # Bias Alignment
-    # -----------------------------------------------------
-
-    if bias == "BULLISH":
-
-        if zone == "DISCOUNT":
-
-            alignment = "ALIGNED"
-
-        elif zone == "PREMIUM":
-
-            alignment = "NOT ALIGNED"
-
-        else:
-
-            alignment = "EQUILIBRIUM"
-
-    elif bias == "BEARISH":
-
-        if zone == "PREMIUM":
-
-            alignment = "ALIGNED"
-
-        elif zone == "DISCOUNT":
-
-            alignment = "NOT ALIGNED"
-
-        else:
-
-            alignment = "EQUILIBRIUM"
-
-    else:
-
-        alignment = "NO CLEAR BIAS"
+        alignment = determine_alignment(
+            bias,
+            major["zone"],
+            local["zone"]
+        )
 
     return {
-        "status": "OK",
-        "range_high": range_high,
-        "range_low": range_low,
-        "equilibrium": equilibrium,
-        "premium_level": equilibrium,
-        "discount_level": equilibrium,
-        "current_price": current_price,
-        "position_percent": position_percent,
-        "zone": zone,
-        "alignment": alignment
+
+        "major": major,
+
+        "local": local,
+
+        "alignment":
+            alignment
+
     }
+
 
 # =========================================================
 # DISCORD
 # =========================================================
 
-def send_discord_message(message):
+def send_discord_message(
+    message
+):
 
     if not WEBHOOK_URL:
 
@@ -858,11 +1474,15 @@ def send_discord_message(message):
         )
 
     response = requests.post(
+
         WEBHOOK_URL,
+
         json={
             "content": message
         },
+
         timeout=10
+
     )
 
     if response.status_code not in (
@@ -875,7 +1495,9 @@ def send_discord_message(message):
             f"{response.status_code}"
         )
 
-        print(response.text)
+        print(
+            response.text
+        )
 
         response.raise_for_status()
 
@@ -889,11 +1511,17 @@ def send_discord_message(message):
 # =========================================================
 
 print()
-print("🚀 ICT/SMC ENGINE — STRUCTURE + LIQUIDITY")
-print("============================================")
 
 print(
-    f"📌 Symbol: {SYMBOL}"
+    "🚀 ICT/SMC ENGINE — STEP 3 UPGRADE"
+)
+
+print(
+    "============================================"
+)
+
+print(
+    f"📌 Symbol: {DISPLAY_SYMBOL}"
 )
 
 print(
@@ -910,9 +1538,13 @@ print(
 # =========================================================
 
 df = get_candles(
+
     SYMBOL,
+
     TIMEFRAME,
+
     CANDLE_LIMIT
+
 )
 
 print(
@@ -925,8 +1557,11 @@ print(
 # =========================================================
 
 swing_highs, swing_lows = find_swings(
+
     df,
+
     SWING_STRENGTH
+
 )
 
 print(
@@ -941,12 +1576,15 @@ print(
 
 
 # =========================================================
-# LABELS
+# STRUCTURE LABELS
 # =========================================================
 
 high_labels, low_labels = label_swings(
+
     swing_highs,
+
     swing_lows
+
 )
 
 
@@ -955,9 +1593,13 @@ high_labels, low_labels = label_swings(
 # =========================================================
 
 events = detect_historical_events(
+
     df,
+
     swing_highs,
+
     swing_lows
+
 )
 
 
@@ -966,9 +1608,13 @@ events = detect_historical_events(
 # =========================================================
 
 structure = get_current_structure(
+
     swing_highs,
+
     swing_lows,
+
     events
+
 )
 
 
@@ -977,68 +1623,110 @@ structure = get_current_structure(
 # =========================================================
 
 liquidity = analyze_liquidity(
+
     df,
+
     swing_highs,
+
     swing_lows
+
 )
+
 
 # =========================================================
 # PREMIUM / DISCOUNT
 # =========================================================
 
 premium_discount = analyze_premium_discount(
+
     df,
+
     swing_highs,
+
     swing_lows,
+
     structure["bias"]
+
 )
+
+major = premium_discount[
+    "major"
+]
+
+local = premium_discount[
+    "local"
+]
+
+alignment = premium_discount[
+    "alignment"
+]
+
+
 # =========================================================
-# TERMINAL OUTPUT
+# TERMINAL — STRUCTURE
 # =========================================================
 
-print("\n============================================")
+print()
+
+print(
+    "============================================"
+)
 
 print(
     f"📊 CURRENT BIAS: "
     f"{structure['bias']}"
 )
 
-print("\n🏗️ CURRENT STRUCTURE")
+print()
+
+print(
+    "🏗️ CURRENT STRUCTURE"
+)
 
 if structure["last_high"]:
 
     print(
+
         f"🔺 High: "
         f"{structure['last_high']['label']} "
         f"@ "
         f"${structure['last_high']['price']:.4f}"
+
     )
 
 if structure["last_low"]:
 
     print(
+
         f"🔻 Low: "
         f"{structure['last_low']['label']} "
         f"@ "
         f"${structure['last_low']['price']:.4f}"
+
     )
 
 
 # =========================================================
-# HISTORICAL EVENTS OUTPUT
+# HISTORICAL EVENTS
 # =========================================================
 
-print("\n🚨 HISTORICAL STRUCTURE EVENTS")
+print()
+
+print(
+    "🚨 HISTORICAL STRUCTURE EVENTS"
+)
 
 if events:
 
     for event in events[-5:]:
 
         print(
+
             f"{event['time']} | "
             f"{event['event']} | "
             f"{event['direction']} | "
             f"${event['price']:.4f}"
+
         )
 
 else:
@@ -1052,7 +1740,11 @@ else:
 # LAST EVENT
 # =========================================================
 
-print("\n🎯 LAST CONFIRMED EVENT")
+print()
+
+print(
+    "🎯 LAST CONFIRMED EVENT"
+)
 
 if events:
 
@@ -1074,12 +1766,12 @@ if events:
     )
 
     print(
-        f"Level Type: "
+        f"Level: "
         f"{last_event['level_type']}"
     )
 
     print(
-        f"Break Time: "
+        f"Time: "
         f"{last_event['time']}"
     )
 
@@ -1091,10 +1783,14 @@ else:
 
 
 # =========================================================
-# LIQUIDITY OUTPUT
+# LIQUIDITY
 # =========================================================
 
-print("\n💧 LIQUIDITY")
+print()
+
+print(
+    "💧 LIQUIDITY"
+)
 
 print(
     f"💰 Current Price: "
@@ -1104,7 +1800,9 @@ print(
 
 if liquidity["eqh"]:
 
-    print("\n🔺 EQH")
+    print(
+        "\n🔺 EQH"
+    )
 
     for price in liquidity["eqh"][-5:]:
 
@@ -1121,7 +1819,9 @@ else:
 
 if liquidity["eql"]:
 
-    print("\n🔻 EQL")
+    print(
+        "\n🔻 EQL"
+    )
 
     for price in liquidity["eql"][-5:]:
 
@@ -1138,7 +1838,9 @@ else:
 
 if liquidity["bsl"]:
 
-    print("\n🟢 BSL")
+    print(
+        "\n🟢 BSL"
+    )
 
     for price in liquidity["bsl"][-5:]:
 
@@ -1155,7 +1857,9 @@ else:
 
 if liquidity["ssl"]:
 
-    print("\n🔴 SSL")
+    print(
+        "\n🔴 SSL"
+    )
 
     for price in liquidity["ssl"][-5:]:
 
@@ -1170,7 +1874,11 @@ else:
     )
 
 
-print("\n📅 PREVIOUS DAY LEVELS")
+print()
+
+print(
+    "📅 PREVIOUS DAY LEVELS"
+)
 
 if liquidity["pdh"] is not None:
 
@@ -1200,117 +1908,230 @@ else:
     )
 
 
-print("\n============================================")
 # =========================================================
-# PREMIUM / DISCOUNT OUTPUT
+# MAJOR RANGE OUTPUT
 # =========================================================
 
-print("\n📐 PREMIUM / DISCOUNT")
+print()
 
-if premium_discount["status"] == "OK":
+print(
+    "📐 MAJOR DEALING RANGE"
+)
+
+if major["status"] == "OK":
 
     print(
-        f"Range High: "
-        f"${premium_discount['range_high']:.4f}"
+
+        f"🔺 Range High: "
+        f"${major['high']:.4f}"
+
     )
 
     print(
-        f"Range Low: "
-        f"${premium_discount['range_low']:.4f}"
+
+        f"🔻 Range Low: "
+        f"${major['low']:.4f}"
+
     )
 
     print(
-        f"50% Equilibrium: "
-        f"${premium_discount['equilibrium']:.4f}"
+
+        f"⚖️ 50% Equilibrium: "
+        f"${major['equilibrium']:.4f}"
+
     )
 
     print(
-        f"Current Price: "
-        f"${premium_discount['current_price']:.4f}"
+
+        f"📊 Position: "
+        f"{major['position_percent']:.2f}%"
+
     )
 
     print(
-        f"Position in Range: "
-        f"{premium_discount['position_percent']:.2f}%"
-    )
 
-    print(
-        f"Zone: "
-        f"{premium_discount['zone']}"
-    )
+        f"📍 Zone: "
+        f"{major['zone']}"
 
-    print(
-        f"Bias Alignment: "
-        f"{premium_discount['alignment']}"
     )
 
 else:
 
     print(
-        f"Status: "
-        f"{premium_discount['status']}"
+        f"Status: {major['status']}"
     )
+
+
+# =========================================================
+# LOCAL RANGE OUTPUT
+# =========================================================
+
+print()
+
+print(
+    "📏 LOCAL DEALING RANGE"
+)
+
+if local["status"] == "OK":
+
+    print(
+
+        f"🔺 Range High: "
+        f"${local['high']:.4f}"
+
+    )
+
+    print(
+
+        f"🔻 Range Low: "
+        f"${local['low']:.4f}"
+
+    )
+
+    print(
+
+        f"⚖️ 50% Equilibrium: "
+        f"${local['equilibrium']:.4f}"
+
+    )
+
+    print(
+
+        f"📊 Position: "
+        f"{local['position_percent']:.2f}%"
+
+    )
+
+    print(
+
+        f"📍 Zone: "
+        f"{local['zone']}"
+
+    )
+
+else:
+
+    print(
+        f"Status: {local['status']}"
+    )
+
+
+# =========================================================
+# ALIGNMENT
+# =========================================================
+
+print()
+
+print(
+    "🎯 PREMIUM / DISCOUNT ALIGNMENT"
+)
+
+print(
+    f"Bias: {structure['bias']}"
+)
+
+print(
+    f"Major Zone: {major['zone']}"
+)
+
+print(
+    f"Local Zone: {local['zone']}"
+)
+
+print(
+    f"Alignment: {alignment}"
+)
+
+print()
+
+print(
+    "============================================"
+)
+
 
 # =========================================================
 # DISCORD MESSAGE
 # =========================================================
 
 message = (
-    "🧠 **LTCUSDT.P — ICT/SMC ENGINE**\n\n"
+
+    f"🧠 **{DISPLAY_SYMBOL} — ICT/SMC ENGINE**\n\n"
 
     f"💰 Current Price: "
     f"`${liquidity['current_price']:.4f}`\n"
 
     "⏱️ Timeframe: `1H`\n\n"
 
-    "🏗️ **CURRENT STRUCTURE**\n"
-    f"📊 Bias: **{structure['bias']}**\n"
 )
 
 
-# Current High
+# =========================================================
+# CURRENT STRUCTURE
+# =========================================================
+
+message += (
+    "🏗️ **CURRENT STRUCTURE**\n"
+)
+
+message += (
+    f"📊 Bias: "
+    f"**{structure['bias']}**\n"
+)
+
 
 if structure["last_high"]:
 
     message += (
+
         f"🔺 High: "
         f"**{structure['last_high']['label']}** "
         f"@ "
         f"`${structure['last_high']['price']:.4f}`\n"
+
     )
 
-
-# Current Low
 
 if structure["last_low"]:
 
     message += (
+
         f"🔻 Low: "
         f"**{structure['last_low']['label']}** "
         f"@ "
         f"`${structure['last_low']['price']:.4f}`\n"
+
     )
 
 
 # =========================================================
-# LAST CONFIRMED EVENT
+# LAST EVENT
 # =========================================================
 
-message += "\n🎯 **LAST CONFIRMED EVENT**\n"
+message += (
+    "\n🎯 **LAST CONFIRMED EVENT**\n"
+)
 
 if events:
 
     last_event = events[-1]
 
     message += (
-        f"Event: **{last_event['event']}**\n"
-        f"Direction: **{last_event['direction']}**\n"
+
+        f"Event: "
+        f"**{last_event['event']}**\n"
+
+        f"Direction: "
+        f"**{last_event['direction']}**\n"
+
         f"Broken Level: "
         f"`${last_event['price']:.4f}`\n"
+
         f"Level: "
         f"`{last_event['level_type']}`\n"
+
         f"Time: "
         f"`{last_event['time']}`\n"
+
     )
 
 else:
@@ -1321,20 +2142,25 @@ else:
 
 
 # =========================================================
-# RECENT EVENTS
+# RECENT HISTORY
 # =========================================================
 
-message += "\n📜 **RECENT STRUCTURE HISTORY**\n"
+message += (
+    "\n📜 **RECENT STRUCTURE HISTORY**\n"
+)
 
 if events:
 
     for event in events[-3:]:
 
         message += (
+
             f"• `{event['time']}` — "
             f"**{event['event']} "
             f"{event['direction']}** "
-            f"@ `${event['price']:.4f}`\n"
+            f"@ "
+            f"`${event['price']:.4f}`\n"
+
         )
 
 else:
@@ -1348,14 +2174,16 @@ else:
 # LIQUIDITY
 # =========================================================
 
-message += "\n💧 **LIQUIDITY**\n"
+message += (
+    "\n💧 **LIQUIDITY**\n"
+)
 
-
-# EQH
 
 if liquidity["eqh"]:
 
-    message += "\n🔺 **EQH**\n"
+    message += (
+        "\n🔺 **EQH**\n"
+    )
 
     for price in liquidity["eqh"][-3:]:
 
@@ -1370,11 +2198,11 @@ else:
     )
 
 
-# EQL
-
 if liquidity["eql"]:
 
-    message += "\n🔻 **EQL**\n"
+    message += (
+        "\n🔻 **EQL**\n"
+    )
 
     for price in liquidity["eql"][-3:]:
 
@@ -1389,11 +2217,11 @@ else:
     )
 
 
-# BSL
-
 if liquidity["bsl"]:
 
-    message += "\n🟢 **BSL**\n"
+    message += (
+        "\n🟢 **BSL**\n"
+    )
 
     for price in liquidity["bsl"][-3:]:
 
@@ -1408,11 +2236,11 @@ else:
     )
 
 
-# SSL
-
 if liquidity["ssl"]:
 
-    message += "\n🔴 **SSL**\n"
+    message += (
+        "\n🔴 **SSL**\n"
+    )
 
     for price in liquidity["ssl"][-3:]:
 
@@ -1431,12 +2259,16 @@ else:
 # PDH / PDL
 # =========================================================
 
-message += "\n📅 **PREVIOUS DAY LEVELS**\n"
+message += (
+    "\n📅 **PREVIOUS DAY LEVELS**\n"
+)
+
 
 if liquidity["pdh"] is not None:
 
     message += (
-        f"PDH: `${liquidity['pdh']:.4f}`\n"
+        f"PDH: "
+        f"`${liquidity['pdh']:.4f}`\n"
     )
 
 else:
@@ -1449,7 +2281,8 @@ else:
 if liquidity["pdl"] is not None:
 
     message += (
-        f"PDL: `${liquidity['pdl']:.4f}`\n"
+        f"PDL: "
+        f"`${liquidity['pdl']:.4f}`\n"
     )
 
 else:
@@ -1459,55 +2292,124 @@ else:
     )
 
 
+# =========================================================
+# MAJOR DEALING RANGE
+# =========================================================
+
 message += (
-    "\n🤖 **ICT/SMC Engine**\n"
-    "✅ Current Structure + Historical Events "
-    "+ Liquidity Scan Complete"
+    "\n📐 **MAJOR DEALING RANGE**\n"
 )
-# =========================================================
-# PREMIUM / DISCOUNT DISCORD
-# =========================================================
 
-message += "\n📐 **PREMIUM / DISCOUNT**\n"
 
-if premium_discount["status"] == "OK":
+if major["status"] == "OK":
 
     message += (
-        f"🔺 Range High: "
-        f"`${premium_discount['range_high']:.4f}`\n"
 
-        f"🔻 Range Low: "
-        f"`${premium_discount['range_low']:.4f}`\n"
+        f"🔺 High: "
+        f"`${major['high']:.4f}`\n"
 
-        f"⚖️ Equilibrium 50%: "
-        f"`${premium_discount['equilibrium']:.4f}`\n"
+        f"🔻 Low: "
+        f"`${major['low']:.4f}`\n"
 
-        f"💰 Current: "
-        f"`${premium_discount['current_price']:.4f}`\n"
+        f"⚖️ 50% Equilibrium: "
+        f"`${major['equilibrium']:.4f}`\n"
 
-        f"📊 Range Position: "
-        f"`{premium_discount['position_percent']:.2f}%`\n"
+        f"📊 Position: "
+        f"`{major['position_percent']:.2f}%`\n"
 
         f"📍 Zone: "
-        f"**{premium_discount['zone']}**\n"
+        f"**{major['zone']}**\n"
 
-        f"🎯 Bias Alignment: "
-        f"**{premium_discount['alignment']}**\n"
     )
 
 else:
 
     message += (
-        f"Status: "
-        f"`{premium_discount['status']}`\n"
+        f"Status: `{major['status']}`\n"
     )
+
+
+# =========================================================
+# LOCAL DEALING RANGE
+# =========================================================
+
+message += (
+    "\n📏 **LOCAL DEALING RANGE**\n"
+)
+
+
+if local["status"] == "OK":
+
+    message += (
+
+        f"🔺 High: "
+        f"`${local['high']:.4f}`\n"
+
+        f"🔻 Low: "
+        f"`${local['low']:.4f}`\n"
+
+        f"⚖️ 50% Equilibrium: "
+        f"`${local['equilibrium']:.4f}`\n"
+
+        f"📊 Position: "
+        f"`{local['position_percent']:.2f}%`\n"
+
+        f"📍 Zone: "
+        f"**{local['zone']}**\n"
+
+    )
+
+else:
+
+    message += (
+        f"Status: `{local['status']}`\n"
+    )
+
+
+# =========================================================
+# ALIGNMENT
+# =========================================================
+
+message += (
+    "\n🎯 **PREMIUM / DISCOUNT ALIGNMENT**\n"
+
+    f"Bias: **{structure['bias']}**\n"
+
+    f"Major Zone: **{major['zone']}**\n"
+
+    f"Local Zone: **{local['zone']}**\n"
+
+    f"Alignment: **{alignment}**\n"
+)
+
+
+# =========================================================
+# FINAL STATUS
+# =========================================================
+
+message += (
+
+    "\n🤖 **ICT/SMC Engine**\n"
+
+    "✅ Structure\n"
+
+    "✅ Historical BOS/CHOCH\n"
+
+    "✅ Liquidity\n"
+
+    "✅ Major + Local Premium/Discount"
+
+)
+
 
 # =========================================================
 # SEND DISCORD
 # =========================================================
 
+print()
+
 print(
-    "\n📡 Sending upgraded analysis to Discord..."
+    "📡 Sending Step 3 upgrade to Discord..."
 )
 
 send_discord_message(
@@ -1515,6 +2417,8 @@ send_discord_message(
 )
 
 
+print()
+
 print(
-    "\n✅ UPGRADED ICT/SMC ENGINE TEST COMPLETE!"
+    "✅ STEP 3 UPGRADE TEST COMPLETE!"
 )
