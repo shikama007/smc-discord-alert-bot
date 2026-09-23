@@ -6,7 +6,7 @@ import os
 # SETTINGS
 # =========================================================
 
-SYMBOL = "LTC_USDT"
+SYMBOL = "BTC_USDT"
 TIMEFRAME = "Min60"
 CANDLE_LIMIT = 200
 
@@ -704,6 +704,328 @@ def send_discord_message(message):
     print("✅ Discord message sent successfully!")
 
 
+
+# =========================================================
+# STEP 4 QUALITY UPGRADE
+# =========================================================
+# The functions below replace the raw POI selection logic.
+# They keep only fresh, bias-aligned and context-relevant POIs,
+# then rank them by a simple quality score.
+#
+# IMPORTANT:
+# - This is a mechanical approximation of discretionary ICT/SMC POI work.
+# - It is NOT an entry signal.
+# - A POI must still be validated by Sweep -> Displacement -> CHOCH/BOS -> Retest.
+
+
+def zone_overlap(a, b):
+    lower = max(a["lower"], b["lower"])
+    upper = min(a["upper"], b["upper"])
+    if lower > upper:
+        return None
+
+    return {
+        "lower": lower,
+        "upper": upper,
+        "size": upper - lower
+    }
+
+
+def zone_mid_distance_pct(price, zone):
+    mid = (zone["lower"] + zone["upper"]) / 2
+    return abs(price - mid) / price * 100
+
+
+def mark_fvg_quality(fvgs, df):
+    closed = df.iloc[:-1].copy()
+
+    for fvg in fvgs:
+        later = closed[closed["time"] > fvg["time"]]
+
+        if fvg["direction"] == "BULLISH":
+            fully_filled = (
+                not later.empty
+                and float(later["low"].min()) <= fvg["lower"]
+            )
+        else:
+            fully_filled = (
+                not later.empty
+                and float(later["high"].max()) >= fvg["upper"]
+            )
+
+        fvg["mitigated"] = fully_filled
+        fvg["fresh"] = not fully_filled
+
+    return fvgs
+
+
+def mark_ob_quality(order_blocks, df):
+    closed = df.iloc[:-1].copy()
+
+    for ob in order_blocks:
+        later = closed[closed["time"] > ob["time"]]
+
+        if ob["direction"] == "BULLISH":
+            invalidated = (
+                not later.empty
+                and float(later["close"].min()) < ob["lower"]
+            )
+        else:
+            invalidated = (
+                not later.empty
+                and float(later["close"].max()) > ob["upper"]
+            )
+
+        ob["mitigated"] = invalidated
+        ob["fresh"] = not invalidated
+
+    return order_blocks
+
+
+def mark_zone_quality(zones, df):
+    # Supply/Demand uses the same invalidation idea as the OB heuristic.
+    closed = df.iloc[:-1].copy()
+
+    for zone in zones:
+        later = closed[closed["time"] > zone["time"]]
+
+        if zone["direction"] == "BULLISH":
+            invalidated = (
+                not later.empty
+                and float(later["close"].min()) < zone["lower"]
+            )
+        else:
+            invalidated = (
+                not later.empty
+                and float(later["close"].max()) > zone["upper"]
+            )
+
+        zone["mitigated"] = invalidated
+        zone["fresh"] = not invalidated
+
+    return zones
+
+
+def calculate_poi_score(
+    poi,
+    current_price,
+    bias,
+    pd_alignment,
+    latest_event,
+    premium_discount
+):
+    score = 0
+    reasons = []
+
+    # 1) Direction aligned with current structural bias.
+    if poi["direction"] == bias:
+        score += 25
+        reasons.append("BIAS ALIGNED")
+
+    # 2) Fresh POI gets priority.
+    if poi.get("fresh", False):
+        score += 20
+        reasons.append("FRESH")
+    else:
+        score -= 30
+        reasons.append("MITIGATED")
+
+    # 3) Current price interaction.
+    if poi["inside"]:
+        score += 25
+        reasons.append("AT POI")
+    elif poi["distance_pct"] <= POI_NEAR_PCT:
+        score += 18
+        reasons.append("NEAR POI")
+    elif poi["distance_pct"] <= 1.0:
+        score += 8
+        reasons.append("WITHIN 1%")
+
+    # 4) Premium/discount alignment.
+    # Use the actual major/local equilibrium values instead of
+    # a generic numeric test.
+    major = premium_discount.get("major", {})
+    local = premium_discount.get("local", {})
+
+    pd_aligned = False
+
+    if bias == "BEARISH":
+        if major.get("status") == "OK" and poi["mid"] >= major["equilibrium"]:
+            pd_aligned = True
+        if local.get("status") == "OK" and poi["mid"] >= local["equilibrium"]:
+            pd_aligned = True
+
+    elif bias == "BULLISH":
+        if major.get("status") == "OK" and poi["mid"] <= major["equilibrium"]:
+            pd_aligned = True
+        if local.get("status") == "OK" and poi["mid"] <= local["equilibrium"]:
+            pd_aligned = True
+
+    if pd_aligned:
+        score += 10
+        reasons.append("PD ALIGNED")
+
+    # 5) Recent structural event gets a small boost when the POI
+    # belongs to the same direction.
+    if latest_event and latest_event["direction"] == poi["direction"]:
+        score += 10
+        reasons.append("EVENT ALIGNED")
+
+    return score, reasons
+
+
+def build_quality_pois(
+    fvgs,
+    order_blocks,
+    supply_demand,
+    current_price,
+    bias,
+    premium_discount,
+    events
+):
+    candidates = []
+
+    for x in fvgs:
+        candidates.append({**x, "category": "FVG"})
+
+    for x in order_blocks:
+        candidates.append({**x, "category": "ORDER BLOCK"})
+
+    for x in supply_demand:
+        candidates.append({**x, "category": "SUPPLY/DEMAND"})
+
+    latest_event = events[-1] if events else None
+    pd_alignment = premium_discount.get("alignment", "UNKNOWN")
+
+    # Calculate basic proximity and status.
+    for poi in candidates:
+        poi["distance_pct"] = distance_to_zone_pct(current_price, poi)
+        poi["inside"] = price_in_zone(current_price, poi)
+
+        if poi["inside"]:
+            poi["status"] = "AT POI"
+        elif poi["distance_pct"] <= POI_NEAR_PCT:
+            poi["status"] = "NEAR POI"
+        else:
+            poi["status"] = "AWAY"
+
+        # This is used only as a compact context flag.
+        # Actual PD zone is already calculated by the main engine.
+        poi["mid"] = (poi["lower"] + poi["upper"]) / 2
+
+        score, reasons = calculate_poi_score(
+            poi,
+            current_price,
+            bias,
+            pd_alignment,
+            latest_event,
+            premium_discount
+        )
+
+        poi["score"] = score
+        poi["reasons"] = reasons
+
+    # Confluence: overlapping FVG + OB is more useful than isolated
+    # raw candidates, so give both zones a bonus.
+    for i in range(len(candidates)):
+        for j in range(i + 1, len(candidates)):
+            a = candidates[i]
+            b = candidates[j]
+
+            if {a["category"], b["category"]} == {"FVG", "ORDER BLOCK"}:
+                overlap = zone_overlap(a, b)
+
+                if overlap and overlap["size"] > 0:
+                    a["confluence"] = True
+                    b["confluence"] = True
+                    a["score"] += 15
+                    b["score"] += 15
+
+                    if "FVG + OB CONFLUENCE" not in a["reasons"]:
+                        a["reasons"].append("FVG + OB CONFLUENCE")
+                    if "FVG + OB CONFLUENCE" not in b["reasons"]:
+                        b["reasons"].append("FVG + OB CONFLUENCE")
+
+                    a["overlap_zone"] = overlap
+                    b["overlap_zone"] = overlap
+
+    for poi in candidates:
+        poi.setdefault("confluence", False)
+
+    # Only bias-aligned, fresh POIs are eligible for the main shortlist.
+    eligible = [
+        p for p in candidates
+        if p["direction"] == bias and p.get("fresh", False)
+    ]
+
+    eligible.sort(
+        key=lambda p: (
+            -p["score"],
+            p["distance_pct"],
+            p["time"]
+        )
+    )
+
+    # Remove duplicate zones with same category/type and nearly identical range.
+    selected = []
+    seen = set()
+
+    for poi in eligible:
+        key = (
+            poi["category"],
+            poi["type"],
+            round(poi["lower"], 3),
+            round(poi["upper"], 3)
+        )
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        selected.append(poi)
+
+        if len(selected) >= 3:
+            break
+
+    # A compact list for diagnostics.
+    all_ranked = sorted(
+        candidates,
+        key=lambda p: (-p["score"], p["distance_pct"])
+    )
+
+    return selected, all_ranked
+
+
+def select_relevant_pois(
+    fvgs,
+    order_blocks,
+    supply_demand,
+    current_price,
+    bias,
+    premium_discount=None,
+    events=None,
+    df=None
+):
+    premium_discount = premium_discount or {"alignment": "UNKNOWN"}
+    events = events or []
+
+    # Apply freshness / mitigation filters.
+    if df is not None:
+        fvgs = mark_fvg_quality(fvgs, df)
+        order_blocks = mark_ob_quality(order_blocks, df)
+        supply_demand = mark_zone_quality(supply_demand, df)
+
+    return build_quality_pois(
+        fvgs,
+        order_blocks,
+        supply_demand,
+        current_price,
+        bias,
+        premium_discount,
+        events
+    )
+
+
 # =========================================================
 # MAIN
 # =========================================================
@@ -765,7 +1087,10 @@ preferred_pois, nearest_pois = select_relevant_pois(
     order_blocks,
     supply_demand,
     current_price,
-    structure["bias"]
+    structure["bias"],
+    premium_discount=premium_discount,
+    events=events,
+    df=df
 )
 
 # =========================================================
@@ -814,7 +1139,7 @@ print(f"Order Blocks detected: {len(order_blocks)}")
 print(f"Supply/Demand zones: {len(supply_demand)}")
 
 print()
-print("⭐ RELEVANT POIs")
+print("⭐ TOP QUALITY POIs")
 
 if preferred_pois:
     for poi in preferred_pois:
@@ -823,10 +1148,19 @@ if preferred_pois:
             f"{poi['type']} | "
             f"${poi['lower']:.4f} - ${poi['upper']:.4f} | "
             f"{poi['status']} | "
-            f"{poi['distance_pct']:.3f}% away"
+            f"Score: {poi['score']} | "
+            f"Fresh: {poi['fresh']} | "
+            f"Confluence: {poi['confluence']}"
         )
 else:
-    print("No bias-aligned POI found.")
+    print("No fresh bias-aligned POI found.")
+
+print()
+print("📊 RAW → QUALITY FILTER")
+print(f"Raw FVGs: {len(fvgs)}")
+print(f"Raw OBs: {len(order_blocks)}")
+print(f"Raw Supply/Demand: {len(supply_demand)}")
+print(f"Final quality POIs: {len(preferred_pois)}")
 
 # =========================================================
 # DISCORD MESSAGE
@@ -931,18 +1265,28 @@ message += (
 )
 
 if preferred_pois:
-    message += "\n⭐ **BIAS-ALIGNED POIs**\n"
+    message += "\n⭐ **TOP QUALITY POIs**\n"
 
-    for poi in preferred_pois[:5]:
+    for poi in preferred_pois[:3]:
+        fresh_text = "YES" if poi.get("fresh", False) else "NO"
+        confluence_text = "YES" if poi.get("confluence", False) else "NO"
+
         message += (
-            f"• **{poi['category']}** — "
-            f"{poi['type']}\n"
+            f"• **{poi['category']}** — {poi['type']}\n"
             f"  Zone: `${poi['lower']:.4f}` - `${poi['upper']:.4f}`\n"
             f"  Status: **{poi['status']}**\n"
             f"  Distance: `{poi['distance_pct']:.3f}%`\n"
+            f"  Score: **{poi['score']}**\n"
+            f"  Fresh: `{fresh_text}` | Confluence: `{confluence_text}`\n"
+            f"  Why: `{', '.join(poi['reasons'])}`\n"
         )
 else:
-    message += "\n⭐ Bias-aligned POI: `None detected`\n"
+    message += "\n⭐ Fresh bias-aligned POI: `None detected`\n"
+
+message += (
+    f"\n📊 Raw POIs → `{len(fvgs)} FVG / {len(order_blocks)} OB / {len(supply_demand)} S-D`\n"
+    f"🎯 Final Quality POIs → `{len(preferred_pois)}`\n"
+)
 
 message += (
     "\n⚠️ **POI STATUS IS NOT AN ENTRY SIGNAL**\n"
