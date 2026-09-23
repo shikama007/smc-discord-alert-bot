@@ -7,12 +7,17 @@ import os
 # ==========================================
 
 SYMBOL = "LTC_USDT"
+
 TIMEFRAME = "Min60"
 CANDLE_LIMIT = 100
 
 BASE_URL = "https://api.mexc.com/api/v1/contract/kline"
 
-# Discord Webhook from GitHub Secret
+# Equal High / Equal Low tolerance
+# 0.001 = 0.1%
+EQUAL_TOLERANCE = 0.001
+
+# Discord
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
 
@@ -119,7 +124,7 @@ def find_swings(df, strength=2):
 
             swing_highs.append({
                 "index": i,
-                "price": current_high,
+                "price": float(current_high),
                 "time": df.loc[i, "time"]
             })
 
@@ -132,7 +137,7 @@ def find_swings(df, strength=2):
 
             swing_lows.append({
                 "index": i,
-                "price": current_low,
+                "price": float(current_low),
                 "time": df.loc[i, "time"]
             })
 
@@ -163,7 +168,6 @@ def analyze_structure(
     last_low = swing_lows[-1]
     previous_low = swing_lows[-2]
 
-    # Higher High / Lower High
     higher_high = (
         last_high["price"]
         > previous_high["price"]
@@ -174,7 +178,6 @@ def analyze_structure(
         < previous_high["price"]
     )
 
-    # Higher Low / Lower Low
     higher_low = (
         last_low["price"]
         > previous_low["price"]
@@ -185,7 +188,7 @@ def analyze_structure(
         < previous_low["price"]
     )
 
-    # Bullish
+    # Bullish structure
     if higher_high and higher_low:
 
         return {
@@ -195,7 +198,7 @@ def analyze_structure(
             "choch": "NONE"
         }
 
-    # Bearish
+    # Bearish structure
     if lower_high and lower_low:
 
         return {
@@ -211,6 +214,190 @@ def analyze_structure(
         "structure": "MIXED",
         "bos": "NONE",
         "choch": "NONE"
+    }
+
+
+# ==========================================
+# EQUAL HIGH / LOW CHECK
+# ==========================================
+
+def prices_are_equal(price1, price2):
+
+    difference = abs(price1 - price2)
+
+    average = (price1 + price2) / 2
+
+    if average == 0:
+        return False
+
+    percentage_difference = (
+        difference / average
+    )
+
+    return percentage_difference <= EQUAL_TOLERANCE
+
+
+# ==========================================
+# FIND EQUAL HIGHS
+# ==========================================
+
+def find_equal_highs(swing_highs):
+
+    equal_highs = []
+
+    if len(swing_highs) < 2:
+        return equal_highs
+
+    for i in range(len(swing_highs) - 1):
+
+        first = swing_highs[i]
+        second = swing_highs[i + 1]
+
+        if prices_are_equal(
+            first["price"],
+            second["price"]
+        ):
+
+            average_price = (
+                first["price"]
+                + second["price"]
+            ) / 2
+
+            equal_highs.append({
+                "price": average_price,
+                "first_time": first["time"],
+                "second_time": second["time"]
+            })
+
+    return equal_highs
+
+
+# ==========================================
+# FIND EQUAL LOWS
+# ==========================================
+
+def find_equal_lows(swing_lows):
+
+    equal_lows = []
+
+    if len(swing_lows) < 2:
+        return equal_lows
+
+    for i in range(len(swing_lows) - 1):
+
+        first = swing_lows[i]
+        second = swing_lows[i + 1]
+
+        if prices_are_equal(
+            first["price"],
+            second["price"]
+        ):
+
+            average_price = (
+                first["price"]
+                + second["price"]
+            ) / 2
+
+            equal_lows.append({
+                "price": average_price,
+                "first_time": first["time"],
+                "second_time": second["time"]
+            })
+
+    return equal_lows
+
+
+# ==========================================
+# LIQUIDITY ANALYSIS
+# ==========================================
+
+def analyze_liquidity(
+    df,
+    swing_highs,
+    swing_lows
+):
+
+    current_price = float(
+        df["close"].iloc[-1]
+    )
+
+    # --------------------------------------
+    # Buy-side liquidity
+    # --------------------------------------
+
+    buy_side_levels = []
+
+    for swing in swing_highs[-5:]:
+
+        if swing["price"] > current_price:
+
+            buy_side_levels.append(
+                swing["price"]
+            )
+
+    # --------------------------------------
+    # Sell-side liquidity
+    # --------------------------------------
+
+    sell_side_levels = []
+
+    for swing in swing_lows[-5:]:
+
+        if swing["price"] < current_price:
+
+            sell_side_levels.append(
+                swing["price"]
+            )
+
+    # --------------------------------------
+    # Equal Highs / Equal Lows
+    # --------------------------------------
+
+    equal_highs = find_equal_highs(
+        swing_highs
+    )
+
+    equal_lows = find_equal_lows(
+        swing_lows
+    )
+
+    # --------------------------------------
+    # PDH / PDL
+    # --------------------------------------
+
+    df["date"] = df["time"].dt.date
+
+    unique_dates = df["date"].unique()
+
+    pdh = None
+    pdl = None
+
+    if len(unique_dates) >= 2:
+
+        previous_date = unique_dates[-2]
+
+        previous_day = df[
+            df["date"] == previous_date
+        ]
+
+        if not previous_day.empty:
+
+            pdh = float(
+                previous_day["high"].max()
+            )
+
+            pdl = float(
+                previous_day["low"].min()
+            )
+
+    return {
+        "current_price": current_price,
+        "buy_side_levels": buy_side_levels,
+        "sell_side_levels": sell_side_levels,
+        "equal_highs": equal_highs,
+        "equal_lows": equal_lows,
+        "pdh": pdh,
+        "pdl": pdl
     }
 
 
@@ -247,14 +434,16 @@ def send_discord_message(message):
 
         response.raise_for_status()
 
-    print("✅ Discord message sent successfully!")
+    print(
+        "✅ Discord message sent successfully!"
+    )
 
 
 # ==========================================
 # MAIN
 # ==========================================
 
-print("\n🚀 SMC ENGINE — STEP 1")
+print("\n🚀 SMC ENGINE — STEP 2")
 print("==============================")
 
 print(
@@ -270,12 +459,15 @@ print(
 )
 
 
+# ==========================================
+# GET DATA
+# ==========================================
+
 df = get_candles(
     SYMBOL,
     TIMEFRAME,
     CANDLE_LIMIT
 )
-
 
 print(
     f"✅ {len(df)} candles loaded"
@@ -291,42 +483,19 @@ swing_highs, swing_lows = find_swings(
     strength=2
 )
 
-
 print(
-    f"\n🔺 Swing Highs: {len(swing_highs)}"
+    f"\n🔺 Swing Highs: "
+    f"{len(swing_highs)}"
 )
 
 print(
-    f"🔻 Swing Lows: {len(swing_lows)}"
+    f"🔻 Swing Lows: "
+    f"{len(swing_lows)}"
 )
 
 
 # ==========================================
-# SHOW RECENT SWINGS
-# ==========================================
-
-print("\n📍 RECENT SWING HIGHS")
-
-for swing in swing_highs[-5:]:
-
-    print(
-        f"   {swing['time']} → "
-        f"${swing['price']:.4f}"
-    )
-
-
-print("\n📍 RECENT SWING LOWS")
-
-for swing in swing_lows[-5:]:
-
-    print(
-        f"   {swing['time']} → "
-        f"${swing['price']:.4f}"
-    )
-
-
-# ==========================================
-# STRUCTURE ANALYSIS
+# MARKET STRUCTURE
 # ==========================================
 
 structure = analyze_structure(
@@ -357,38 +526,244 @@ print(
     f"{structure['choch']}"
 )
 
+
+# ==========================================
+# LIQUIDITY
+# ==========================================
+
+liquidity = analyze_liquidity(
+    df,
+    swing_highs,
+    swing_lows
+)
+
+print("\n💧 LIQUIDITY")
+print("------------------------------")
+
+print(
+    f"💰 Current Price: "
+    f"${liquidity['current_price']:.4f}"
+)
+
+
+# Equal Highs
+if liquidity["equal_highs"]:
+
+    print("\n🔺 EQUAL HIGHS (EQH)")
+
+    for level in liquidity["equal_highs"][-5:]:
+
+        print(
+            f"   ${level['price']:.4f}"
+        )
+
+else:
+
+    print("\n🔺 EQUAL HIGHS: None")
+
+
+# Equal Lows
+if liquidity["equal_lows"]:
+
+    print("\n🔻 EQUAL LOWS (EQL)")
+
+    for level in liquidity["equal_lows"][-5:]:
+
+        print(
+            f"   ${level['price']:.4f}"
+        )
+
+else:
+
+    print("\n🔻 EQUAL LOWS: None")
+
+
+# Buy-side liquidity
+print("\n🟢 BUY-SIDE LIQUIDITY (BSL)")
+
+if liquidity["buy_side_levels"]:
+
+    for level in liquidity["buy_side_levels"][-5:]:
+
+        print(
+            f"   ${level:.4f}"
+        )
+
+else:
+
+    print("   None")
+
+
+# Sell-side liquidity
+print("\n🔴 SELL-SIDE LIQUIDITY (SSL)")
+
+if liquidity["sell_side_levels"]:
+
+    for level in liquidity["sell_side_levels"][-5:]:
+
+        print(
+            f"   ${level:.4f}"
+        )
+
+else:
+
+    print("   None")
+
+
+# PDH / PDL
+print("\n📅 PREVIOUS DAY LEVELS")
+
+if liquidity["pdh"] is not None:
+
+    print(
+        f"   PDH: ${liquidity['pdh']:.4f}"
+    )
+
+else:
+
+    print("   PDH: None")
+
+
+if liquidity["pdl"] is not None:
+
+    print(
+        f"   PDL: ${liquidity['pdl']:.4f}"
+    )
+
+else:
+
+    print("   PDL: None")
+
+
 print("==============================")
 
 
 # ==========================================
-# DISCORD ALERT
+# DISCORD MESSAGE
 # ==========================================
 
-discord_message = (
-    "📊 **LTCUSDT.P — 1H MARKET STRUCTURE**\n\n"
+message = (
+    "📊 **LTCUSDT.P — ICT STEP 2**\n\n"
 
-    f"📌 Symbol: `{SYMBOL}`\n"
+    f"💰 Current Price: "
+    f"`${liquidity['current_price']:.4f}`\n"
+
     f"⏱️ Timeframe: `1H`\n\n"
 
+    "🏗️ **MARKET STRUCTURE**\n"
     f"📈 Trend: **{structure['trend']}**\n"
-    f"🏗️ Structure: **{structure['structure']}**\n"
-    f"🚀 BOS: **{structure['bos']}**\n"
-    f"🔄 CHOCH: **{structure['choch']}**\n\n"
+    f"Structure: **{structure['structure']}**\n"
+    f"BOS: **{structure['bos']}**\n"
+    f"CHOCH: **{structure['choch']}**\n\n"
 
-    f"🔺 Swing Highs: `{len(swing_highs)}`\n"
-    f"🔻 Swing Lows: `{len(swing_lows)}`\n\n"
+    "💧 **LIQUIDITY**\n"
+)
 
-    "🤖 **SMC Engine — Step 1**\n"
-    "✅ MEXC Futures Data Online"
+# EQH
+if liquidity["equal_highs"]:
+
+    message += "\n🔺 **EQH**\n"
+
+    for level in liquidity["equal_highs"][-3:]:
+
+        message += (
+            f"• `${level['price']:.4f}`\n"
+        )
+
+else:
+
+    message += "\n🔺 EQH: `None detected`\n"
+
+
+# EQL
+if liquidity["equal_lows"]:
+
+    message += "\n🔻 **EQL**\n"
+
+    for level in liquidity["equal_lows"][-3:]:
+
+        message += (
+            f"• `${level['price']:.4f}`\n"
+        )
+
+else:
+
+    message += "\n🔻 EQL: `None detected`\n"
+
+
+# BSL
+if liquidity["buy_side_levels"]:
+
+    message += "\n🟢 **BSL**\n"
+
+    for level in liquidity["buy_side_levels"][-3:]:
+
+        message += (
+            f"• `${level:.4f}`\n"
+        )
+
+else:
+
+    message += "\n🟢 BSL: `None`\n"
+
+
+# SSL
+if liquidity["sell_side_levels"]:
+
+    message += "\n🔴 **SSL**\n"
+
+    for level in liquidity["sell_side_levels"][-3:]:
+
+        message += (
+            f"• `${level:.4f}`\n"
+        )
+
+else:
+
+    message += "\n🔴 SSL: `None`\n"
+
+
+# PDH / PDL
+message += "\n📅 **PREVIOUS DAY LEVELS**\n"
+
+if liquidity["pdh"] is not None:
+
+    message += (
+        f"PDH: `${liquidity['pdh']:.4f}`\n"
+    )
+
+else:
+
+    message += "PDH: `None`\n"
+
+
+if liquidity["pdl"] is not None:
+
+    message += (
+        f"PDL: `${liquidity['pdl']:.4f}`\n"
+    )
+
+else:
+
+    message += "PDL: `None`\n"
+
+
+message += (
+    "\n🤖 **ICT/SMC Engine — Step 2**\n"
+    "✅ Market Structure + Liquidity Scan Complete"
 )
 
 
-print("\n📡 Sending result to Discord...")
+# ==========================================
+# SEND TO DISCORD
+# ==========================================
 
-send_discord_message(discord_message)
+print("\n📡 Sending Step 2 result to Discord...")
+
+send_discord_message(message)
 
 
 print(
-    "\n✅ STEP 1 MARKET STRUCTURE "
-    "TEST + DISCORD COMPLETE!"
+    "\n✅ STEP 2 MARKET STRUCTURE + "
+    "LIQUIDITY TEST COMPLETE!"
 )
