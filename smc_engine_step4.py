@@ -1034,47 +1034,102 @@ def select_relevant_pois(
 # We keep confirmed structure untouched and show newer extremes
 # separately as UNCONFIRMED so the chart context is clearer.
 
-def get_developing_extremes(df, confirmed_swing_highs, confirmed_swing_lows):
+def get_developing_extremes(
+    df,
+    confirmed_swing_highs,
+    confirmed_swing_lows,
+    lookback=12
+):
+    """
+    Show only developing highs/lows formed AFTER the latest
+    confirmed swing in the same direction.
+
+    This prevents old historical extremes such as $50.18 from
+    being incorrectly reported as the current developing low.
+    The current still-forming candle is excluded.
+    """
+
     closed = df.iloc[:-1].copy()
 
     if closed.empty:
         return {"high": None, "low": None}
 
-    last_confirmed_high = (
-        confirmed_swing_highs[-1]["price"]
-        if confirmed_swing_highs else None
+    # Latest confirmed swing indexes.
+    last_high_idx = (
+        confirmed_swing_highs[-1]["index"]
+        if confirmed_swing_highs
+        else 0
     )
-    last_confirmed_low = (
-        confirmed_swing_lows[-1]["price"]
-        if confirmed_swing_lows else None
+
+    last_low_idx = (
+        confirmed_swing_lows[-1]["index"]
+        if confirmed_swing_lows
+        else 0
     )
+
+    # Only inspect a recent context window.
+    context_start = max(0, len(closed) - lookback)
+
+    # For a developing high, we need price action AFTER the
+    # latest confirmed high.
+    high_start = max(context_start, last_high_idx + 1)
+
+    # For a developing low, we need price action AFTER the
+    # latest confirmed low.
+    low_start = max(context_start, last_low_idx + 1)
 
     developing_high = None
     developing_low = None
 
-    # Only report a newer high than the latest confirmed swing.
-    recent_high = float(closed["high"].max())
-    high_idx = int(closed["high"].idxmax())
+    if high_start < len(closed):
+        high_window = closed.iloc[high_start:]
 
-    if last_confirmed_high is None or recent_high > last_confirmed_high:
-        developing_high = {
-            "price": recent_high,
-            "time": closed.loc[high_idx, "time"],
-            "index": high_idx,
-            "status": "UNCONFIRMED"
-        }
+        high_idx = int(high_window["high"].idxmax())
+        high_price = float(closed.loc[high_idx, "high"])
 
-    # Only report a newer low than the latest confirmed swing.
-    recent_low = float(closed["low"].min())
-    low_idx = int(closed["low"].idxmin())
+        # Only show it if it actually exceeds the latest
+        # confirmed high.
+        latest_confirmed_high = (
+            float(confirmed_swing_highs[-1]["price"])
+            if confirmed_swing_highs
+            else None
+        )
 
-    if last_confirmed_low is None or recent_low < last_confirmed_low:
-        developing_low = {
-            "price": recent_low,
-            "time": closed.loc[low_idx, "time"],
-            "index": low_idx,
-            "status": "UNCONFIRMED"
-        }
+        if (
+            latest_confirmed_high is None
+            or high_price > latest_confirmed_high
+        ):
+            developing_high = {
+                "price": high_price,
+                "time": closed.loc[high_idx, "time"],
+                "index": high_idx,
+                "status": "UNCONFIRMED"
+            }
+
+    if low_start < len(closed):
+        low_window = closed.iloc[low_start:]
+
+        low_idx = int(low_window["low"].idxmin())
+        low_price = float(closed.loc[low_idx, "low"])
+
+        latest_confirmed_low = (
+            float(confirmed_swing_lows[-1]["price"])
+            if confirmed_swing_lows
+            else None
+        )
+
+        # Only show it if it actually breaks below the latest
+        # confirmed low.
+        if (
+            latest_confirmed_low is None
+            or low_price < latest_confirmed_low
+        ):
+            developing_low = {
+                "price": low_price,
+                "time": closed.loc[low_idx, "time"],
+                "index": low_idx,
+                "status": "UNCONFIRMED"
+            }
 
     return {
         "high": developing_high,
@@ -1275,8 +1330,9 @@ if developing["low"]:
 message += (
     "\n🧠 **STRUCTURE NOTE**\n"
     "Confirmed swings require right-side candle confirmation. "
-    "Developing highs/lows are shown separately and are **NOT** used "
-    "as confirmed structure.\n"
+    "Developing highs/lows are searched only after the latest "
+    "confirmed swing and within the recent context window. "
+    "They are **NOT** used as confirmed structure.\n"
 )
 
 message += "\n🎯 **LAST CONFIRMED EVENT**\n"
