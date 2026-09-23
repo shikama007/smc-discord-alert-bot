@@ -1026,6 +1026,62 @@ def select_relevant_pois(
     )
 
 
+
+# =========================================================
+# DEVELOPING / UNCONFIRMED SWING CONTEXT
+# =========================================================
+# Confirmed swings require right-side candle confirmation.
+# We keep confirmed structure untouched and show newer extremes
+# separately as UNCONFIRMED so the chart context is clearer.
+
+def get_developing_extremes(df, confirmed_swing_highs, confirmed_swing_lows):
+    closed = df.iloc[:-1].copy()
+
+    if closed.empty:
+        return {"high": None, "low": None}
+
+    last_confirmed_high = (
+        confirmed_swing_highs[-1]["price"]
+        if confirmed_swing_highs else None
+    )
+    last_confirmed_low = (
+        confirmed_swing_lows[-1]["price"]
+        if confirmed_swing_lows else None
+    )
+
+    developing_high = None
+    developing_low = None
+
+    # Only report a newer high than the latest confirmed swing.
+    recent_high = float(closed["high"].max())
+    high_idx = int(closed["high"].idxmax())
+
+    if last_confirmed_high is None or recent_high > last_confirmed_high:
+        developing_high = {
+            "price": recent_high,
+            "time": closed.loc[high_idx, "time"],
+            "index": high_idx,
+            "status": "UNCONFIRMED"
+        }
+
+    # Only report a newer low than the latest confirmed swing.
+    recent_low = float(closed["low"].min())
+    low_idx = int(closed["low"].idxmin())
+
+    if last_confirmed_low is None or recent_low < last_confirmed_low:
+        developing_low = {
+            "price": recent_low,
+            "time": closed.loc[low_idx, "time"],
+            "index": low_idx,
+            "status": "UNCONFIRMED"
+        }
+
+    return {
+        "high": developing_high,
+        "low": developing_low
+    }
+
+
 # =========================================================
 # MAIN
 # =========================================================
@@ -1048,6 +1104,12 @@ events = detect_historical_events(
 
 structure = get_current_structure(
     swing_highs, swing_lows, events
+)
+
+developing = get_developing_extremes(
+    df,
+    swing_highs,
+    swing_lows
 )
 
 liquidity = analyze_liquidity(
@@ -1103,14 +1165,26 @@ print(f"📊 Bias: {structure['bias']}")
 
 if structure["last_high"]:
     print(
-        f"🔺 High: {structure['last_high']['label']} "
+        f"🔺 Confirmed High: {structure['last_high']['label']} "
         f"@ ${structure['last_high']['price']:.4f}"
     )
 
 if structure["last_low"]:
     print(
-        f"🔻 Low: {structure['last_low']['label']} "
+        f"🔻 Confirmed Low: {structure['last_low']['label']} "
         f"@ ${structure['last_low']['price']:.4f}"
+    )
+
+if developing["high"]:
+    print(
+        f"🟡 Developing High: ~${developing['high']['price']:.4f} "
+        f"({developing['high']['status']})"
+    )
+
+if developing["low"]:
+    print(
+        f"🟡 Developing Low: ~${developing['low']['price']:.4f} "
+        f"({developing['low']['status']})"
     )
 
 print()
@@ -1182,9 +1256,28 @@ if structure["last_high"]:
 
 if structure["last_low"]:
     message += (
-        f"🔻 Low: **{structure['last_low']['label']}** "
+        f"🔻 Confirmed Low: **{structure['last_low']['label']}** "
         f"@ `${structure['last_low']['price']:.4f}`\n"
     )
+
+if developing["high"]:
+    message += (
+        f"🟡 Developing High: `~${developing['high']['price']:.4f}` "
+        f"— **UNCONFIRMED**\n"
+    )
+
+if developing["low"]:
+    message += (
+        f"🟡 Developing Low: `~${developing['low']['price']:.4f}` "
+        f"— **UNCONFIRMED**\n"
+    )
+
+message += (
+    "\n🧠 **STRUCTURE NOTE**\n"
+    "Confirmed swings require right-side candle confirmation. "
+    "Developing highs/lows are shown separately and are **NOT** used "
+    "as confirmed structure.\n"
+)
 
 message += "\n🎯 **LAST CONFIRMED EVENT**\n"
 
