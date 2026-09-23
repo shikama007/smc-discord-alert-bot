@@ -6,6 +6,20 @@ import os
 # SETTINGS
 # =========================================================
 
+# =========================================================
+# USER SETTINGS
+# =========================================================
+# Enter any MEXC Futures perpetual symbol here.
+# Examples:
+#   LTC_USDT
+#   BTC_USDT
+#   ETH_USDT
+#   SOL_USDT
+#
+# TradingView style display is generated automatically:
+# LTC_USDT -> LTCUSDT.P
+# BTC_USDT -> BTCUSDT.P
+
 SYMBOL = "BTC_USDT"
 TIMEFRAME = "Min60"
 CANDLE_LIMIT = 200
@@ -23,7 +37,15 @@ POI_NEAR_PCT = 0.50           # current price considered "near" POI within 0.50%
 
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
-DISPLAY_SYMBOL = SYMBOL.replace("_USDT", "USDT") + ".P"
+DISPLAY_SYMBOL = SYMBOL.upper().replace("-", "_")
+
+if not DISPLAY_SYMBOL.endswith("_USDT"):
+    raise ValueError(
+        "SYMBOL must use MEXC Futures format, e.g. BTC_USDT, LTC_USDT, ETH_USDT"
+    )
+
+DISPLAY_SYMBOL = DISPLAY_SYMBOL.replace("_USDT", "USDT") + ".P"
+SYMBOL = SYMBOL.upper().replace("-", "_")
 
 
 # =========================================================
@@ -687,21 +709,56 @@ def select_relevant_pois(
 # =========================================================
 
 def send_discord_message(message):
+    """
+    Send a Discord message safely.
+
+    Discord normal webhook messages have a 2000-character limit.
+    This function splits long reports into multiple messages while
+    trying to split at newline boundaries.
+    """
     if not WEBHOOK_URL:
         raise RuntimeError("DISCORD_WEBHOOK_URL secret not found!")
 
-    response = requests.post(
-        WEBHOOK_URL,
-        json={"content": message},
-        timeout=10
-    )
+    MAX_LENGTH = 1900  # Keep a small safety margin below Discord's 2000 limit.
+    chunks = []
+    remaining = message
 
-    if response.status_code not in (200, 204):
-        print(f"Discord Error: {response.status_code}")
-        print(response.text)
-        response.raise_for_status()
+    while len(remaining) > MAX_LENGTH:
+        split_at = remaining.rfind("\n", 0, MAX_LENGTH)
 
-    print("✅ Discord message sent successfully!")
+        # If there is no newline before the limit, split at the limit.
+        if split_at <= 0:
+            split_at = MAX_LENGTH
+
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:].lstrip()
+
+    if remaining:
+        chunks.append(remaining)
+
+    total = len(chunks)
+
+    for number, chunk in enumerate(chunks, start=1):
+        payload = {"content": chunk}
+
+        response = requests.post(
+            WEBHOOK_URL,
+            json=payload,
+            timeout=10
+        )
+
+        print(
+            f"📡 Discord message {number}/{total} "
+            f"→ HTTP {response.status_code} "
+            f"({len(chunk)} chars)"
+        )
+
+        if response.status_code not in (200, 204):
+            print(f"Discord Error: {response.status_code}")
+            print(response.text)
+            response.raise_for_status()
+
+    print(f"✅ Discord alert sent successfully! ({total} message(s))")
 
 
 
