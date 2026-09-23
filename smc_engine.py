@@ -685,7 +685,165 @@ def analyze_liquidity(
         "pdh": pdh,
         "pdl": pdl
     }
+# =========================================================
+# PREMIUM / DISCOUNT ENGINE
+# =========================================================
 
+def analyze_premium_discount(
+    df,
+    swing_highs,
+    swing_lows,
+    bias
+):
+
+    current_price = float(
+        df["close"].iloc[-1]
+    )
+
+    # -----------------------------------------------------
+    # Need at least one confirmed high and low
+    # -----------------------------------------------------
+
+    if not swing_highs or not swing_lows:
+
+        return {
+            "status": "NOT ENOUGH DATA",
+            "range_high": None,
+            "range_low": None,
+            "equilibrium": None,
+            "premium_level": None,
+            "discount_level": None,
+            "current_price": current_price,
+            "position_percent": None,
+            "alignment": "UNKNOWN"
+        }
+
+    # -----------------------------------------------------
+    # Latest confirmed swing high / low
+    # -----------------------------------------------------
+
+    latest_high = swing_highs[-1]
+    latest_low = swing_lows[-1]
+
+    range_high = float(
+        latest_high["price"]
+    )
+
+    range_low = float(
+        latest_low["price"]
+    )
+
+    # -----------------------------------------------------
+    # Make sure high > low
+    # -----------------------------------------------------
+
+    if range_high <= range_low:
+
+        return {
+            "status": "INVALID RANGE",
+            "range_high": range_high,
+            "range_low": range_low,
+            "equilibrium": None,
+            "premium_level": None,
+            "discount_level": None,
+            "current_price": current_price,
+            "position_percent": None,
+            "alignment": "UNKNOWN"
+        }
+
+    # -----------------------------------------------------
+    # 50% Equilibrium
+    # -----------------------------------------------------
+
+    equilibrium = (
+        range_high + range_low
+    ) / 2
+
+    # -----------------------------------------------------
+    # Range size
+    # -----------------------------------------------------
+
+    range_size = (
+        range_high - range_low
+    )
+
+    # -----------------------------------------------------
+    # Current position inside range
+    #
+    # 0%   = Range Low
+    # 50%  = Equilibrium
+    # 100% = Range High
+    # -----------------------------------------------------
+
+    position_percent = (
+        (current_price - range_low)
+        / range_size
+    ) * 100
+
+    # -----------------------------------------------------
+    # Premium / Discount
+    # -----------------------------------------------------
+
+    if current_price > equilibrium:
+
+        zone = "PREMIUM"
+
+    elif current_price < equilibrium:
+
+        zone = "DISCOUNT"
+
+    else:
+
+        zone = "EQUILIBRIUM"
+
+    # -----------------------------------------------------
+    # Bias Alignment
+    # -----------------------------------------------------
+
+    if bias == "BULLISH":
+
+        if zone == "DISCOUNT":
+
+            alignment = "ALIGNED"
+
+        elif zone == "PREMIUM":
+
+            alignment = "NOT ALIGNED"
+
+        else:
+
+            alignment = "EQUILIBRIUM"
+
+    elif bias == "BEARISH":
+
+        if zone == "PREMIUM":
+
+            alignment = "ALIGNED"
+
+        elif zone == "DISCOUNT":
+
+            alignment = "NOT ALIGNED"
+
+        else:
+
+            alignment = "EQUILIBRIUM"
+
+    else:
+
+        alignment = "NO CLEAR BIAS"
+
+    return {
+        "status": "OK",
+        "range_high": range_high,
+        "range_low": range_low,
+        "equilibrium": equilibrium,
+        "premium_level": equilibrium,
+        "discount_level": equilibrium,
+        "current_price": current_price,
+        "position_percent": position_percent,
+        "zone": zone,
+        "alignment": alignment
+    }
 
 # =========================================================
 # DISCORD
@@ -824,7 +982,16 @@ liquidity = analyze_liquidity(
     swing_lows
 )
 
+# =========================================================
+# PREMIUM / DISCOUNT
+# =========================================================
 
+premium_discount = analyze_premium_discount(
+    df,
+    swing_highs,
+    swing_lows,
+    structure["bias"]
+)
 # =========================================================
 # TERMINAL OUTPUT
 # =========================================================
@@ -1034,7 +1201,55 @@ else:
 
 
 print("\n============================================")
+# =========================================================
+# PREMIUM / DISCOUNT OUTPUT
+# =========================================================
 
+print("\n📐 PREMIUM / DISCOUNT")
+
+if premium_discount["status"] == "OK":
+
+    print(
+        f"Range High: "
+        f"${premium_discount['range_high']:.4f}"
+    )
+
+    print(
+        f"Range Low: "
+        f"${premium_discount['range_low']:.4f}"
+    )
+
+    print(
+        f"50% Equilibrium: "
+        f"${premium_discount['equilibrium']:.4f}"
+    )
+
+    print(
+        f"Current Price: "
+        f"${premium_discount['current_price']:.4f}"
+    )
+
+    print(
+        f"Position in Range: "
+        f"{premium_discount['position_percent']:.2f}%"
+    )
+
+    print(
+        f"Zone: "
+        f"{premium_discount['zone']}"
+    )
+
+    print(
+        f"Bias Alignment: "
+        f"{premium_discount['alignment']}"
+    )
+
+else:
+
+    print(
+        f"Status: "
+        f"{premium_discount['status']}"
+    )
 
 # =========================================================
 # DISCORD MESSAGE
@@ -1249,7 +1464,43 @@ message += (
     "✅ Current Structure + Historical Events "
     "+ Liquidity Scan Complete"
 )
+# =========================================================
+# PREMIUM / DISCOUNT DISCORD
+# =========================================================
 
+message += "\n📐 **PREMIUM / DISCOUNT**\n"
+
+if premium_discount["status"] == "OK":
+
+    message += (
+        f"🔺 Range High: "
+        f"`${premium_discount['range_high']:.4f}`\n"
+
+        f"🔻 Range Low: "
+        f"`${premium_discount['range_low']:.4f}`\n"
+
+        f"⚖️ Equilibrium 50%: "
+        f"`${premium_discount['equilibrium']:.4f}`\n"
+
+        f"💰 Current: "
+        f"`${premium_discount['current_price']:.4f}`\n"
+
+        f"📊 Range Position: "
+        f"`{premium_discount['position_percent']:.2f}%`\n"
+
+        f"📍 Zone: "
+        f"**{premium_discount['zone']}**\n"
+
+        f"🎯 Bias Alignment: "
+        f"**{premium_discount['alignment']}**\n"
+    )
+
+else:
+
+    message += (
+        f"Status: "
+        f"`{premium_discount['status']}`\n"
+    )
 
 # =========================================================
 # SEND DISCORD
