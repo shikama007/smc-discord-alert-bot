@@ -22,4 +22,4 @@ jobs:
       - name: Run Market + Discord Test
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python market_test.py
+        run: python smc_engine.py
