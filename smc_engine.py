@@ -2,14 +2,15 @@ import requests
 import pandas as pd
 import os
 
-# ==========================================
+
+# =========================================================
 # SETTINGS
-# ==========================================
+# =========================================================
 
 SYMBOL = "LTC_USDT"
 
 TIMEFRAME = "Min60"
-CANDLE_LIMIT = 100
+CANDLE_LIMIT = 150
 
 BASE_URL = "https://api.mexc.com/api/v1/contract/kline"
 
@@ -17,15 +18,18 @@ BASE_URL = "https://api.mexc.com/api/v1/contract/kline"
 # 0.001 = 0.1%
 EQUAL_TOLERANCE = 0.001
 
+# Swing strength
+SWING_STRENGTH = 2
+
 # Discord
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
 
-# ==========================================
+# =========================================================
 # GET MEXC FUTURES DATA
-# ==========================================
+# =========================================================
 
-def get_candles(symbol, interval, limit=100):
+def get_candles(symbol, interval, limit=150):
 
     url = f"{BASE_URL}/{symbol}"
 
@@ -73,14 +77,14 @@ def get_candles(symbol, interval, limit=100):
         unit="s"
     )
 
-    df = df.tail(limit).reset_index(drop=True)
+    df = df.dropna().reset_index(drop=True)
 
-    return df
+    return df.tail(limit).reset_index(drop=True)
 
 
-# ==========================================
-# FIND SWING HIGHS / LOWS
-# ==========================================
+# =========================================================
+# FIND CONFIRMED SWINGS
+# =========================================================
 
 def find_swings(df, strength=2):
 
@@ -115,7 +119,10 @@ def find_swings(df, strength=2):
             "low"
         ]
 
+        # -----------------------------
         # Swing High
+        # -----------------------------
+
         if (
             current_high > left_highs.max()
             and
@@ -128,7 +135,10 @@ def find_swings(df, strength=2):
                 "time": df.loc[i, "time"]
             })
 
+        # -----------------------------
         # Swing Low
+        # -----------------------------
+
         if (
             current_low < left_lows.min()
             and
@@ -144,82 +154,245 @@ def find_swings(df, strength=2):
     return swing_highs, swing_lows
 
 
-# ==========================================
-# MARKET STRUCTURE
-# ==========================================
+# =========================================================
+# STRUCTURE LABELS
+# =========================================================
 
-def analyze_structure(
+def get_structure_labels(
+    swing_highs,
+    swing_lows
+):
+
+    high_labels = []
+    low_labels = []
+
+    # -----------------------------
+    # High labels
+    # -----------------------------
+
+    for i in range(1, len(swing_highs)):
+
+        current = swing_highs[i]["price"]
+        previous = swing_highs[i - 1]["price"]
+
+        if current > previous:
+
+            label = "HH"
+
+        elif current < previous:
+
+            label = "LH"
+
+        else:
+
+            label = "EQH"
+
+        high_labels.append({
+            "label": label,
+            "price": current,
+            "time": swing_highs[i]["time"],
+            "index": swing_highs[i]["index"]
+        })
+
+    # -----------------------------
+    # Low labels
+    # -----------------------------
+
+    for i in range(1, len(swing_lows)):
+
+        current = swing_lows[i]["price"]
+        previous = swing_lows[i - 1]["price"]
+
+        if current > previous:
+
+            label = "HL"
+
+        elif current < previous:
+
+            label = "LL"
+
+        else:
+
+            label = "EQL"
+
+        low_labels.append({
+            "label": label,
+            "price": current,
+            "time": swing_lows[i]["time"],
+            "index": swing_lows[i]["index"]
+        })
+
+    return high_labels, low_labels
+
+
+# =========================================================
+# DETERMINE STRUCTURAL BIAS
+# =========================================================
+
+def determine_bias(
     swing_highs,
     swing_lows
 ):
 
     if len(swing_highs) < 2 or len(swing_lows) < 2:
 
-        return {
-            "trend": "UNKNOWN",
-            "structure": "NOT ENOUGH DATA",
-            "bos": "NONE",
-            "choch": "NONE"
-        }
+        return "UNKNOWN"
 
-    last_high = swing_highs[-1]
-    previous_high = swing_highs[-2]
+    last_high = swing_highs[-1]["price"]
+    previous_high = swing_highs[-2]["price"]
 
-    last_low = swing_lows[-1]
-    previous_low = swing_lows[-2]
+    last_low = swing_lows[-1]["price"]
+    previous_low = swing_lows[-2]["price"]
 
-    higher_high = (
-        last_high["price"]
-        > previous_high["price"]
-    )
+    higher_high = last_high > previous_high
+    lower_high = last_high < previous_high
 
-    lower_high = (
-        last_high["price"]
-        < previous_high["price"]
-    )
-
-    higher_low = (
-        last_low["price"]
-        > previous_low["price"]
-    )
-
-    lower_low = (
-        last_low["price"]
-        < previous_low["price"]
-    )
+    higher_low = last_low > previous_low
+    lower_low = last_low < previous_low
 
     # Bullish structure
     if higher_high and higher_low:
 
-        return {
-            "trend": "BULLISH",
-            "structure": "HH → HL",
-            "bos": "BULLISH",
-            "choch": "NONE"
-        }
+        return "BULLISH"
 
     # Bearish structure
     if lower_high and lower_low:
 
-        return {
-            "trend": "BEARISH",
-            "structure": "LH → LL",
-            "bos": "BEARISH",
-            "choch": "NONE"
-        }
+        return "BEARISH"
 
-    # Range / Mixed
-    return {
-        "trend": "RANGE",
-        "structure": "MIXED",
-        "bos": "NONE",
-        "choch": "NONE"
+    return "RANGE"
+
+
+# =========================================================
+# DETECT BOS / CHOCH
+# =========================================================
+
+def detect_structure_event(
+    df,
+    swing_highs,
+    swing_lows
+):
+
+    result = {
+        "event": "NONE",
+        "direction": "NONE",
+        "broken_level": None,
+        "broken_level_type": None,
+        "break_time": None
     }
 
+    if len(swing_highs) < 2 or len(swing_lows) < 2:
 
-# ==========================================
-# EQUAL HIGH / LOW CHECK
-# ==========================================
+        return result
+
+    # -----------------------------------------
+    # Current structural bias
+    # -----------------------------------------
+
+    bias = determine_bias(
+        swing_highs,
+        swing_lows
+    )
+
+    # -----------------------------------------
+    # Most recent confirmed swing levels
+    # -----------------------------------------
+
+    last_high = swing_highs[-1]
+    last_low = swing_lows[-1]
+
+    last_high_price = last_high["price"]
+    last_low_price = last_low["price"]
+
+    # -----------------------------------------
+    # Use CLOSED candles only
+    #
+    # Last candle may still be forming.
+    # -----------------------------------------
+
+    closed_df = df.iloc[:-1].copy()
+
+    if closed_df.empty:
+        return result
+
+    current_close = float(
+        closed_df["close"].iloc[-1]
+    )
+
+    current_time = closed_df["time"].iloc[-1]
+
+    # =====================================================
+    # BULLISH BIAS
+    # =====================================================
+
+    if bias == "BULLISH":
+
+        # Price breaks previous structural high
+        if current_close > last_high_price:
+
+            result = {
+                "event": "BOS",
+                "direction": "BULLISH",
+                "broken_level": last_high_price,
+                "broken_level_type": "SWING HIGH",
+                "break_time": current_time
+            }
+
+            return result
+
+        # Price breaks structural low
+        # = possible trend change
+        if current_close < last_low_price:
+
+            result = {
+                "event": "CHOCH",
+                "direction": "BEARISH",
+                "broken_level": last_low_price,
+                "broken_level_type": "SWING LOW",
+                "break_time": current_time
+            }
+
+            return result
+
+    # =====================================================
+    # BEARISH BIAS
+    # =====================================================
+
+    if bias == "BEARISH":
+
+        # Price breaks previous structural low
+        if current_close < last_low_price:
+
+            result = {
+                "event": "BOS",
+                "direction": "BEARISH",
+                "broken_level": last_low_price,
+                "broken_level_type": "SWING LOW",
+                "break_time": current_time
+            }
+
+            return result
+
+        # Price breaks structural high
+        # = possible trend change
+        if current_close > last_high_price:
+
+            result = {
+                "event": "CHOCH",
+                "direction": "BULLISH",
+                "broken_level": last_high_price,
+                "broken_level_type": "SWING HIGH",
+                "break_time": current_time
+            }
+
+            return result
+
+    return result
+
+
+# =========================================================
+# EQUAL HIGH / LOW
+# =========================================================
 
 def prices_are_equal(price1, price2):
 
@@ -236,10 +409,6 @@ def prices_are_equal(price1, price2):
 
     return percentage_difference <= EQUAL_TOLERANCE
 
-
-# ==========================================
-# FIND EQUAL HIGHS
-# ==========================================
 
 def find_equal_highs(swing_highs):
 
@@ -258,23 +427,15 @@ def find_equal_highs(swing_highs):
             second["price"]
         ):
 
-            average_price = (
+            price = (
                 first["price"]
                 + second["price"]
             ) / 2
 
-            equal_highs.append({
-                "price": average_price,
-                "first_time": first["time"],
-                "second_time": second["time"]
-            })
+            equal_highs.append(price)
 
     return equal_highs
 
-
-# ==========================================
-# FIND EQUAL LOWS
-# ==========================================
 
 def find_equal_lows(swing_lows):
 
@@ -293,23 +454,19 @@ def find_equal_lows(swing_lows):
             second["price"]
         ):
 
-            average_price = (
+            price = (
                 first["price"]
                 + second["price"]
             ) / 2
 
-            equal_lows.append({
-                "price": average_price,
-                "first_time": first["time"],
-                "second_time": second["time"]
-            })
+            equal_lows.append(price)
 
     return equal_lows
 
 
-# ==========================================
+# =========================================================
 # LIQUIDITY ANALYSIS
-# ==========================================
+# =========================================================
 
 def analyze_liquidity(
     df,
@@ -321,63 +478,67 @@ def analyze_liquidity(
         df["close"].iloc[-1]
     )
 
-    # --------------------------------------
-    # Buy-side liquidity
-    # --------------------------------------
+    # -----------------------------------------
+    # BSL
+    # -----------------------------------------
 
-    buy_side_levels = []
+    bsl = []
 
-    for swing in swing_highs[-5:]:
+    for swing in swing_highs[-10:]:
 
         if swing["price"] > current_price:
 
-            buy_side_levels.append(
+            bsl.append(
                 swing["price"]
             )
 
-    # --------------------------------------
-    # Sell-side liquidity
-    # --------------------------------------
+    # -----------------------------------------
+    # SSL
+    # -----------------------------------------
 
-    sell_side_levels = []
+    ssl = []
 
-    for swing in swing_lows[-5:]:
+    for swing in swing_lows[-10:]:
 
         if swing["price"] < current_price:
 
-            sell_side_levels.append(
+            ssl.append(
                 swing["price"]
             )
 
-    # --------------------------------------
-    # Equal Highs / Equal Lows
-    # --------------------------------------
+    # -----------------------------------------
+    # EQH / EQL
+    # -----------------------------------------
 
-    equal_highs = find_equal_highs(
+    eqh = find_equal_highs(
         swing_highs
     )
 
-    equal_lows = find_equal_lows(
+    eql = find_equal_lows(
         swing_lows
     )
 
-    # --------------------------------------
+    # -----------------------------------------
     # PDH / PDL
-    # --------------------------------------
+    # -----------------------------------------
 
-    df["date"] = df["time"].dt.date
+    temp_df = df.copy()
 
-    unique_dates = df["date"].unique()
+    temp_df["date"] = (
+        temp_df["time"].dt.date
+    )
+
+    dates = temp_df["date"].unique()
 
     pdh = None
     pdl = None
 
-    if len(unique_dates) >= 2:
+    if len(dates) >= 2:
 
-        previous_date = unique_dates[-2]
+        previous_date = dates[-2]
 
-        previous_day = df[
-            df["date"] == previous_date
+        previous_day = temp_df[
+            temp_df["date"] == previous_date
         ]
 
         if not previous_day.empty:
@@ -392,18 +553,18 @@ def analyze_liquidity(
 
     return {
         "current_price": current_price,
-        "buy_side_levels": buy_side_levels,
-        "sell_side_levels": sell_side_levels,
-        "equal_highs": equal_highs,
-        "equal_lows": equal_lows,
+        "bsl": bsl,
+        "ssl": ssl,
+        "eqh": eqh,
+        "eql": eql,
         "pdh": pdh,
         "pdl": pdl
     }
 
 
-# ==========================================
-# SEND DISCORD MESSAGE
-# ==========================================
+# =========================================================
+# DISCORD
+# =========================================================
 
 def send_discord_message(message):
 
@@ -413,13 +574,11 @@ def send_discord_message(message):
             "DISCORD_WEBHOOK_URL secret not found!"
         )
 
-    payload = {
-        "content": message
-    }
-
     response = requests.post(
         WEBHOOK_URL,
-        json=payload,
+        json={
+            "content": message
+        },
         timeout=10
     )
 
@@ -439,19 +598,19 @@ def send_discord_message(message):
     )
 
 
-# ==========================================
+# =========================================================
 # MAIN
-# ==========================================
+# =========================================================
 
-print("\n🚀 SMC ENGINE — STEP 2")
-print("==============================")
+print("\n🚀 ICT/SMC ENGINE — STRUCTURE UPGRADE")
+print("========================================")
 
 print(
     f"📌 Symbol: {SYMBOL}"
 )
 
 print(
-    f"⏱️ Timeframe: {TIMEFRAME}"
+    f"⏱️ Timeframe: 1H"
 )
 
 print(
@@ -459,9 +618,9 @@ print(
 )
 
 
-# ==========================================
-# GET DATA
-# ==========================================
+# =========================================================
+# DATA
+# =========================================================
 
 df = get_candles(
     SYMBOL,
@@ -474,62 +633,58 @@ print(
 )
 
 
-# ==========================================
+# =========================================================
 # SWINGS
-# ==========================================
+# =========================================================
 
 swing_highs, swing_lows = find_swings(
     df,
-    strength=2
+    SWING_STRENGTH
 )
 
 print(
-    f"\n🔺 Swing Highs: "
-    f"{len(swing_highs)}"
+    f"\n🔺 Swing Highs: {len(swing_highs)}"
 )
 
 print(
-    f"🔻 Swing Lows: "
-    f"{len(swing_lows)}"
+    f"🔻 Swing Lows: {len(swing_lows)}"
 )
 
 
-# ==========================================
-# MARKET STRUCTURE
-# ==========================================
+# =========================================================
+# STRUCTURE LABELS
+# =========================================================
 
-structure = analyze_structure(
+high_labels, low_labels = get_structure_labels(
     swing_highs,
     swing_lows
 )
 
 
-print("\n==============================")
+# =========================================================
+# BIAS
+# =========================================================
 
-print(
-    f"📊 MARKET TREND: "
-    f"{structure['trend']}"
-)
-
-print(
-    f"🏗️ STRUCTURE: "
-    f"{structure['structure']}"
-)
-
-print(
-    f"🚀 BOS: "
-    f"{structure['bos']}"
-)
-
-print(
-    f"🔄 CHOCH: "
-    f"{structure['choch']}"
+bias = determine_bias(
+    swing_highs,
+    swing_lows
 )
 
 
-# ==========================================
+# =========================================================
+# STRUCTURE EVENT
+# =========================================================
+
+event = detect_structure_event(
+    df,
+    swing_highs,
+    swing_lows
+)
+
+
+# =========================================================
 # LIQUIDITY
-# ==========================================
+# =========================================================
 
 liquidity = analyze_liquidity(
     df,
@@ -537,8 +692,66 @@ liquidity = analyze_liquidity(
     swing_lows
 )
 
+
+# =========================================================
+# TERMINAL OUTPUT
+# =========================================================
+
+print("\n========================================")
+
+print(
+    f"📊 MARKET BIAS: {bias}"
+)
+
+print("\n🏗️ RECENT STRUCTURE")
+
+if high_labels:
+
+    print(
+        f"🔺 High: "
+        f"{high_labels[-1]['label']} "
+        f"@ ${high_labels[-1]['price']:.4f}"
+    )
+
+if low_labels:
+
+    print(
+        f"🔻 Low: "
+        f"{low_labels[-1]['label']} "
+        f"@ ${low_labels[-1]['price']:.4f}"
+    )
+
+
+print("\n🚀 STRUCTURE EVENT")
+
+print(
+    f"Event: {event['event']}"
+)
+
+print(
+    f"Direction: {event['direction']}"
+)
+
+if event["broken_level"] is not None:
+
+    print(
+        f"Broken Level: "
+        f"${event['broken_level']:.4f}"
+    )
+
+    print(
+        f"Level Type: "
+        f"{event['broken_level_type']}"
+    )
+
+else:
+
+    print(
+        "Broken Level: None"
+    )
+
+
 print("\n💧 LIQUIDITY")
-print("------------------------------")
 
 print(
     f"💰 Current Price: "
@@ -546,184 +759,229 @@ print(
 )
 
 
-# Equal Highs
-if liquidity["equal_highs"]:
+if liquidity["eqh"]:
 
-    print("\n🔺 EQUAL HIGHS (EQH)")
+    print("\n🔺 EQH")
 
-    for level in liquidity["equal_highs"][-5:]:
+    for price in liquidity["eqh"][-5:]:
 
         print(
-            f"   ${level['price']:.4f}"
+            f"   ${price:.4f}"
         )
 
 else:
 
-    print("\n🔺 EQUAL HIGHS: None")
+    print("\n🔺 EQH: None")
 
 
-# Equal Lows
-if liquidity["equal_lows"]:
+if liquidity["eql"]:
 
-    print("\n🔻 EQUAL LOWS (EQL)")
+    print("\n🔻 EQL")
 
-    for level in liquidity["equal_lows"][-5:]:
+    for price in liquidity["eql"][-5:]:
 
         print(
-            f"   ${level['price']:.4f}"
+            f"   ${price:.4f}"
         )
 
 else:
 
-    print("\n🔻 EQUAL LOWS: None")
+    print("\n🔻 EQL: None")
 
 
-# Buy-side liquidity
-print("\n🟢 BUY-SIDE LIQUIDITY (BSL)")
+if liquidity["bsl"]:
 
-if liquidity["buy_side_levels"]:
+    print("\n🟢 BSL")
 
-    for level in liquidity["buy_side_levels"][-5:]:
+    for price in liquidity["bsl"][-5:]:
 
         print(
-            f"   ${level:.4f}"
+            f"   ${price:.4f}"
         )
 
 else:
 
-    print("   None")
+    print("\n🟢 BSL: None")
 
 
-# Sell-side liquidity
-print("\n🔴 SELL-SIDE LIQUIDITY (SSL)")
+if liquidity["ssl"]:
 
-if liquidity["sell_side_levels"]:
+    print("\n🔴 SSL")
 
-    for level in liquidity["sell_side_levels"][-5:]:
+    for price in liquidity["ssl"][-5:]:
 
         print(
-            f"   ${level:.4f}"
+            f"   ${price:.4f}"
         )
 
 else:
 
-    print("   None")
+    print("\n🔴 SSL: None")
 
 
-# PDH / PDL
-print("\n📅 PREVIOUS DAY LEVELS")
+print("\n📅 PREVIOUS DAY")
 
-if liquidity["pdh"] is not None:
+print(
+    f"PDH: "
+    f"${liquidity['pdh']:.4f}"
+    if liquidity["pdh"] is not None
+    else "PDH: None"
+)
 
-    print(
-        f"   PDH: ${liquidity['pdh']:.4f}"
-    )
+print(
+    f"PDL: "
+    f"${liquidity['pdl']:.4f}"
+    if liquidity["pdl"] is not None
+    else "PDL: None"
+)
 
-else:
-
-    print("   PDH: None")
-
-
-if liquidity["pdl"] is not None:
-
-    print(
-        f"   PDL: ${liquidity['pdl']:.4f}"
-    )
-
-else:
-
-    print("   PDL: None")
+print("\n========================================")
 
 
-print("==============================")
-
-
-# ==========================================
+# =========================================================
 # DISCORD MESSAGE
-# ==========================================
+# =========================================================
 
 message = (
-    "📊 **LTCUSDT.P — ICT STEP 2**\n\n"
+    "🧠 **LTCUSDT.P — ICT/SMC STRUCTURE UPDATE**\n\n"
 
     f"💰 Current Price: "
     f"`${liquidity['current_price']:.4f}`\n"
 
-    f"⏱️ Timeframe: `1H`\n\n"
+    "⏱️ Timeframe: `1H`\n\n"
 
     "🏗️ **MARKET STRUCTURE**\n"
-    f"📈 Trend: **{structure['trend']}**\n"
-    f"Structure: **{structure['structure']}**\n"
-    f"BOS: **{structure['bos']}**\n"
-    f"CHOCH: **{structure['choch']}**\n\n"
-
-    "💧 **LIQUIDITY**\n"
+    f"📊 Bias: **{bias}**\n"
 )
 
+
+# Recent high / low labels
+
+if high_labels:
+
+    message += (
+        f"🔺 High Structure: "
+        f"**{high_labels[-1]['label']}** "
+        f"@ `${high_labels[-1]['price']:.4f}`\n"
+    )
+
+if low_labels:
+
+    message += (
+        f"🔻 Low Structure: "
+        f"**{low_labels[-1]['label']}** "
+        f"@ `${low_labels[-1]['price']:.4f}`\n"
+    )
+
+
+# Structure event
+
+message += "\n🚨 **STRUCTURE EVENT**\n"
+
+message += (
+    f"Event: **{event['event']}**\n"
+    f"Direction: **{event['direction']}**\n"
+)
+
+
+if event["broken_level"] is not None:
+
+    message += (
+        f"Broken Level: "
+        f"`${event['broken_level']:.4f}`\n"
+        f"Level: `{event['broken_level_type']}`\n"
+    )
+
+else:
+
+    message += (
+        "Broken Level: `None`\n"
+    )
+
+
+# Liquidity
+
+message += "\n💧 **LIQUIDITY**\n"
+
+
 # EQH
-if liquidity["equal_highs"]:
+
+if liquidity["eqh"]:
 
     message += "\n🔺 **EQH**\n"
 
-    for level in liquidity["equal_highs"][-3:]:
+    for price in liquidity["eqh"][-3:]:
 
         message += (
-            f"• `${level['price']:.4f}`\n"
+            f"• `${price:.4f}`\n"
         )
 
 else:
 
-    message += "\n🔺 EQH: `None detected`\n"
+    message += (
+        "🔺 EQH: `None`\n"
+    )
 
 
 # EQL
-if liquidity["equal_lows"]:
+
+if liquidity["eql"]:
 
     message += "\n🔻 **EQL**\n"
 
-    for level in liquidity["equal_lows"][-3:]:
+    for price in liquidity["eql"][-3:]:
 
         message += (
-            f"• `${level['price']:.4f}`\n"
+            f"• `${price:.4f}`\n"
         )
 
 else:
 
-    message += "\n🔻 EQL: `None detected`\n"
+    message += (
+        "🔻 EQL: `None`\n"
+    )
 
 
 # BSL
-if liquidity["buy_side_levels"]:
+
+if liquidity["bsl"]:
 
     message += "\n🟢 **BSL**\n"
 
-    for level in liquidity["buy_side_levels"][-3:]:
+    for price in liquidity["bsl"][-3:]:
 
         message += (
-            f"• `${level:.4f}`\n"
+            f"• `${price:.4f}`\n"
         )
 
 else:
 
-    message += "\n🟢 BSL: `None`\n"
+    message += (
+        "🟢 BSL: `None`\n"
+    )
 
 
 # SSL
-if liquidity["sell_side_levels"]:
+
+if liquidity["ssl"]:
 
     message += "\n🔴 **SSL**\n"
 
-    for level in liquidity["sell_side_levels"][-3:]:
+    for price in liquidity["ssl"][-3:]:
 
         message += (
-            f"• `${level:.4f}`\n"
+            f"• `${price:.4f}`\n"
         )
 
 else:
 
-    message += "\n🔴 SSL: `None`\n"
+    message += (
+        "🔴 SSL: `None`\n"
+    )
 
 
 # PDH / PDL
+
 message += "\n📅 **PREVIOUS DAY LEVELS**\n"
 
 if liquidity["pdh"] is not None:
@@ -749,21 +1007,22 @@ else:
 
 
 message += (
-    "\n🤖 **ICT/SMC Engine — Step 2**\n"
-    "✅ Market Structure + Liquidity Scan Complete"
+    "\n🤖 **ICT/SMC Engine**\n"
+    "✅ Structure + Liquidity Scan Complete"
 )
 
 
-# ==========================================
-# SEND TO DISCORD
-# ==========================================
+# =========================================================
+# SEND DISCORD
+# =========================================================
 
-print("\n📡 Sending Step 2 result to Discord...")
+print(
+    "\n📡 Sending upgraded analysis to Discord..."
+)
 
 send_discord_message(message)
 
 
 print(
-    "\n✅ STEP 2 MARKET STRUCTURE + "
-    "LIQUIDITY TEST COMPLETE!"
+    "\n✅ STRUCTURE UPGRADE TEST COMPLETE!"
 )
