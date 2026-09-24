@@ -21,5 +21,6 @@ jobs:
 
       - name: Run Market + Discord Test
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python smc_engine_step4.py
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }} 
+          
+        run: python smc_engine_step5_next_fix.py
