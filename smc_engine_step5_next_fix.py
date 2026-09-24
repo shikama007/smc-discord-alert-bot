@@ -1311,7 +1311,6 @@ def detect_liquidity_sweeps(
     # - preferred_pois = current high-quality POIs
     # - all_pois = every detected POI, useful for historical time-correctness
     preferred_pois = preferred_pois or []
-    events = events or []
     all_pois = all_pois if all_pois is not None else preferred_pois
 
     # ---------------------------------------------------------
