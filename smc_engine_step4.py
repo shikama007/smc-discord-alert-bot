@@ -188,7 +188,21 @@ def detect_historical_events(df, swing_highs, swing_lows):
     return events
 
 
-def get_current_structure(swing_highs, swing_lows, events):
+def get_current_structure(swing_highs, swing_lows, events, df=None):
+    """
+    Determine current structure while protecting against a common error:
+    using the last mechanically-confirmed pivot as the active structural
+    low/high even when a newer protected extreme formed before the latest BOS.
+
+    For the latest bullish BOS, the protected low is the lowest closed-candle
+    low between the prior swing high and the BOS candle.
+
+    For the latest bearish BOS/CHOCH, the protected high is the highest
+    closed-candle high between the prior swing low and the event candle.
+
+    These protected levels are context levels, not automatically HH/HL/LL/LH.
+    """
+
     if events:
         bias = events[-1]["direction"]
     else:
@@ -197,25 +211,105 @@ def get_current_structure(swing_highs, swing_lows, events):
     last_high = None
     last_low = None
 
+    # ---------------------------------------------------------
+    # CONFIRMED HIGH
+    # ---------------------------------------------------------
     if len(swing_highs) >= 2:
         current = swing_highs[-1]["price"]
         previous = swing_highs[-2]["price"]
-        label = "HH" if current > previous else "LH" if current < previous else "EQH"
+        label = (
+            "HH" if current > previous
+            else "LH" if current < previous
+            else "EQH"
+        )
         last_high = {
             "label": label,
             "price": current,
             "time": swing_highs[-1]["time"]
         }
 
+    # ---------------------------------------------------------
+    # CONFIRMED LOW
+    # ---------------------------------------------------------
     if len(swing_lows) >= 2:
         current = swing_lows[-1]["price"]
         previous = swing_lows[-2]["price"]
-        label = "HL" if current > previous else "LL" if current < previous else "EQL"
+        label = (
+            "HL" if current > previous
+            else "LL" if current < previous
+            else "EQL"
+        )
         last_low = {
             "label": label,
             "price": current,
             "time": swing_lows[-1]["time"]
         }
+
+    # ---------------------------------------------------------
+    # PROTECTED STRUCTURE FIX
+    # ---------------------------------------------------------
+    # The latest BOS/CHOCH is the important anchor. The protected
+    # opposite extreme that led into that break should not be replaced
+    # by a later/less-relevant mechanical pivot.
+    if df is not None and events:
+        closed = df.iloc[:-1].copy().reset_index(drop=True)
+        event = events[-1]
+
+        if not closed.empty:
+            event_rows = closed[closed["time"] == event["time"]]
+
+            if not event_rows.empty:
+                event_idx = int(event_rows.index[-1])
+
+                if event["direction"] == "BULLISH":
+                    # Find the swing high that was broken.
+                    broken_highs = [
+                        s for s in swing_highs
+                        if abs(float(s["price"]) - float(event["price"])) < 1e-9
+                        and s["index"] < event_idx
+                    ]
+
+                    if broken_highs:
+                        anchor_idx = broken_highs[-1]["index"]
+
+                        segment = closed.iloc[anchor_idx:event_idx + 1]
+
+                        if not segment.empty:
+                            protected_idx = int(segment["low"].idxmin())
+                            protected_price = float(
+                                closed.loc[protected_idx, "low"]
+                            )
+
+                            last_low = {
+                                "label": "PROTECTED LOW",
+                                "price": protected_price,
+                                "time": closed.loc[protected_idx, "time"]
+                            }
+
+                elif event["direction"] == "BEARISH":
+                    # Find the swing low that was broken.
+                    broken_lows = [
+                        s for s in swing_lows
+                        if abs(float(s["price"]) - float(event["price"])) < 1e-9
+                        and s["index"] < event_idx
+                    ]
+
+                    if broken_lows:
+                        anchor_idx = broken_lows[-1]["index"]
+
+                        segment = closed.iloc[anchor_idx:event_idx + 1]
+
+                        if not segment.empty:
+                            protected_idx = int(segment["high"].idxmax())
+                            protected_price = float(
+                                closed.loc[protected_idx, "high"]
+                            )
+
+                            last_high = {
+                                "label": "PROTECTED HIGH",
+                                "price": protected_price,
+                                "time": closed.loc[protected_idx, "time"]
+                            }
 
     return {
         "bias": bias,
@@ -1450,7 +1544,10 @@ events = detect_historical_events(
 )
 
 structure = get_current_structure(
-    swing_highs, swing_lows, events
+    swing_highs,
+    swing_lows,
+    events,
+    df=df
 )
 
 developing = get_developing_extremes(
@@ -1772,16 +1869,25 @@ message += (
 if step5["latest"]:
     sweep = step5["latest"]
     poi_text = "YES" if sweep["poi_interaction"] else "NO"
+
     message += (
         f"Direction: **{sweep['direction']}**\n"
         f"Liquidity: `{sweep['liquidity']}`\n"
         f"Level: `${sweep['level']:.4f}`\n"
-        f"Sweep High/Low: `${sweep['high']:.4f}` / `${sweep['low']:.4f}`\n"
+        f"Sweep High: `${sweep['high']:.4f}`\n"
+        f"Sweep Low: `${sweep['low']:.4f}`\n"
         f"Close Back: `${sweep['close']:.4f}`\n"
         f"Penetration: `{sweep['penetration_pct']:.3f}%`\n"
         f"POI Interaction: **{poi_text}**\n"
         f"Time: `{sweep['time']}`\n"
     )
+
+    if sweep.get("poi") is not None:
+        poi = sweep["poi"]
+        message += (
+            f"POI Zone: `${poi['lower']:.4f}` - `${poi['upper']:.4f}`\n"
+            f"POI Type: `{poi['category']} / {poi['type']}`\n"
+        )
 else:
     message += "No confirmed liquidity sweep in recent closed candles.\n"
 
@@ -1801,8 +1907,8 @@ message += (
 )
 
 print()
-print("📡 Sending Step 4 POI result to Discord...")
+print("📡 Sending Step 5 result to Discord...")
 send_discord_message(message)
 
 print()
-print("✅ STEP 4 POI TEST COMPLETE!")
+print("✅ STEP 5 LIQUIDITY SWEEP TEST COMPLETE!")
