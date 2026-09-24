@@ -1063,7 +1063,7 @@ def select_relevant_pois(
 # - Only fully closed candles are analysed.
 # - The liquidity level must already exist before the sweep candle.
 # - A sweep is NOT an entry signal.
-# - POI interaction is reported separately; Step 6 will validate
+# - POI interaction requires the sweep candle to actually enter the POI;\n# - Step 6 will validate
 #   displacement after a confirmed sweep.
 
 SWEEP_LOOKBACK = 30
@@ -1226,14 +1226,16 @@ def detect_liquidity_sweeps(
                     if poi.get("direction") != "BEARISH":
                         continue
 
+                    # STRICT POI interaction:
+                    # The sweep candle itself must actually trade into
+                    # the POI zone. Being merely close to the POI is NOT
+                    # enough to mark interaction.
                     candle_touches_poi = (
-                        high >= poi["lower"] and low <= poi["upper"]
+                        high >= poi["lower"] and
+                        low <= poi["upper"]
                     )
 
-                    poi_distance = distance_to_zone_pct(high, poi)
-                    near_poi = poi_distance <= SWEEP_POI_NEAR_PCT
-
-                    if candle_touches_poi or near_poi:
+                    if candle_touches_poi:
                         sweep["poi_interaction"] = True
                         sweep["poi"] = poi
                         break
@@ -1270,14 +1272,16 @@ def detect_liquidity_sweeps(
                     if poi.get("direction") != "BULLISH":
                         continue
 
+                    # STRICT POI interaction:
+                    # The sweep candle itself must actually trade into
+                    # the POI zone. Being merely close to the POI is NOT
+                    # enough to mark interaction.
                     candle_touches_poi = (
-                        high >= poi["lower"] and low <= poi["upper"]
+                        high >= poi["lower"] and
+                        low <= poi["upper"]
                     )
 
-                    poi_distance = distance_to_zone_pct(low, poi)
-                    near_poi = poi_distance <= SWEEP_POI_NEAR_PCT
-
-                    if candle_touches_poi or near_poi:
+                    if candle_touches_poi:
                         sweep["poi_interaction"] = True
                         sweep["poi"] = poi
                         break
@@ -1306,7 +1310,7 @@ def get_step5_status(sweeps, bias, preferred_pois=None):
     poi_aligned = bool(latest.get("poi_interaction"))
 
     if bias_aligned and poi_aligned:
-        status = "SWEEP + POI INTERACTION"
+        status = "SWEEP + ACTUAL POI INTERACTION"
     elif bias_aligned:
         status = "BIAS-ALIGNED SWEEP"
     else:
