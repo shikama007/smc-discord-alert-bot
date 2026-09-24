@@ -194,11 +194,13 @@ def get_current_structure(swing_highs, swing_lows, events, df=None):
     using the last mechanically-confirmed pivot as the active structural
     low/high even when a newer protected extreme formed before the latest BOS.
 
-    For the latest bullish BOS, the protected low is the lowest closed-candle
-    low between the prior swing high and the BOS candle.
+    For the latest bullish BOS, the protected low prefers the most recent
+    confirmed swing low formed after the broken swing high; a lowest-candle
+    fallback is used only when no confirmed opposite swing exists.
 
-    For the latest bearish BOS/CHOCH, the protected high is the highest
-    closed-candle high between the prior swing low and the event candle.
+    For the latest bearish BOS/CHOCH, the protected high prefers the most
+    recent confirmed swing high formed after the broken swing low; a
+    highest-candle fallback is used only when no confirmed opposite swing exists.
 
     These protected levels are context levels, not automatically HH/HL/LL/LH.
     """
@@ -272,19 +274,33 @@ def get_current_structure(swing_highs, swing_lows, events, df=None):
                     if broken_highs:
                         anchor_idx = broken_highs[-1]["index"]
 
-                        segment = closed.iloc[anchor_idx:event_idx + 1]
+                        # Prefer the MOST RECENT CONFIRMED swing low
+                        # between the broken high and the BOS candle.
+                        # This is closer to structural ICT logic than
+                        # simply taking the lowest wick in the whole leg.
+                        opposite_swings = [
+                            s for s in swing_lows
+                            if anchor_idx < s["index"] <= event_idx
+                        ]
 
-                        if not segment.empty:
+                        if opposite_swings:
+                            protected = opposite_swings[-1]
+                            protected_price = float(protected["price"])
+                            protected_idx = int(protected["index"])
+                        else:
+                            # Fallback only when no confirmed opposite
+                            # swing exists in the BOS leg.
+                            segment = closed.iloc[anchor_idx:event_idx + 1]
                             protected_idx = int(segment["low"].idxmin())
                             protected_price = float(
                                 closed.loc[protected_idx, "low"]
                             )
 
-                            last_low = {
-                                "label": "PROTECTED LOW",
-                                "price": protected_price,
-                                "time": closed.loc[protected_idx, "time"]
-                            }
+                        last_low = {
+                            "label": "PROTECTED LOW",
+                            "price": protected_price,
+                            "time": closed.loc[protected_idx, "time"]
+                        }
 
                 elif event["direction"] == "BEARISH":
                     # Find the swing low that was broken.
@@ -297,19 +313,29 @@ def get_current_structure(swing_highs, swing_lows, events, df=None):
                     if broken_lows:
                         anchor_idx = broken_lows[-1]["index"]
 
-                        segment = closed.iloc[anchor_idx:event_idx + 1]
+                        # Prefer the MOST RECENT CONFIRMED swing high
+                        # between the broken low and the BOS/CHOCH candle.
+                        opposite_swings = [
+                            s for s in swing_highs
+                            if anchor_idx < s["index"] <= event_idx
+                        ]
 
-                        if not segment.empty:
+                        if opposite_swings:
+                            protected = opposite_swings[-1]
+                            protected_price = float(protected["price"])
+                            protected_idx = int(protected["index"])
+                        else:
+                            segment = closed.iloc[anchor_idx:event_idx + 1]
                             protected_idx = int(segment["high"].idxmax())
                             protected_price = float(
                                 closed.loc[protected_idx, "high"]
                             )
 
-                            last_high = {
-                                "label": "PROTECTED HIGH",
-                                "price": protected_price,
-                                "time": closed.loc[protected_idx, "time"]
-                            }
+                        last_high = {
+                            "label": "PROTECTED HIGH",
+                            "price": protected_price,
+                            "time": closed.loc[protected_idx, "time"]
+                        }
 
     return {
         "bias": bias,
@@ -1161,6 +1187,10 @@ def select_relevant_pois(
 #   displacement after a confirmed sweep.
 
 SWEEP_LOOKBACK = 30
+# A sweep remains part of the active ICT sequence only for a limited
+# number of closed candles. Older sweeps are kept for diagnostics but
+# are not treated as the active Step 5 setup.
+SWEEP_ACTIVE_MAX_AGE = 6
 SWEEP_MIN_PENETRATION_PCT = 0.02
 SWEEP_POI_NEAR_PCT = 0.50
 
@@ -1207,13 +1237,19 @@ def detect_liquidity_sweeps(
     swing_highs,
     swing_lows,
     preferred_pois=None,
+    all_pois=None,
     lookback=SWEEP_LOOKBACK
 ):
     """
     Detect confirmed liquidity sweeps from closed candles.
 
-    Each sweep is linked to a liquidity level that existed before the
-    sweep candle. This avoids using future swing information.
+    Improvements:
+    - Liquidity levels must exist before the sweep candle.
+    - EQH/EQL are valid sweep targets, not just BSL/SSL/PDH/PDL.
+    - POI interaction is time-consistent: the POI must already exist
+      at or before the sweep candle.
+    - Only the sweep candle's own range can confirm POI interaction.
+    - Sweep age is stored so Step 5 can distinguish active vs stale setups.
     """
     closed = df.iloc[:-1].copy().reset_index(drop=True)
 
@@ -1222,13 +1258,50 @@ def detect_liquidity_sweeps(
 
     start = max(0, len(closed) - lookback)
     sweeps = []
+
+    # Keep both lists:
+    # - preferred_pois = current high-quality POIs
+    # - all_pois = every detected POI, useful for historical time-correctness
     preferred_pois = preferred_pois or []
+    all_pois = all_pois if all_pois is not None else preferred_pois
+
+    # ---------------------------------------------------------
+    # Historical EQH/EQL helpers
+    # ---------------------------------------------------------
+    def historical_equal_high_levels(prior_highs):
+        levels = []
+        for j in range(len(prior_highs) - 1):
+            a = prior_highs[j]
+            b = prior_highs[j + 1]
+
+            if prices_are_equal(a["price"], b["price"]):
+                levels.append({
+                    "price": (float(a["price"]) + float(b["price"])) / 2,
+                    "type": "EQH",
+                    "source_time": b["time"]
+                })
+        return levels
+
+    def historical_equal_low_levels(prior_lows):
+        levels = []
+        for j in range(len(prior_lows) - 1):
+            a = prior_lows[j]
+            b = prior_lows[j + 1]
+
+            if prices_are_equal(a["price"], b["price"]):
+                levels.append({
+                    "price": (float(a["price"]) + float(b["price"])) / 2,
+                    "type": "EQL",
+                    "source_time": b["time"]
+                })
+        return levels
 
     for i in range(start, len(closed)):
         candle = closed.iloc[i]
         high = float(candle["high"])
         low = float(candle["low"])
         close = float(candle["close"])
+        candle_time = candle["time"]
 
         # Only levels confirmed/known before this candle are eligible.
         prior_highs = [
@@ -1257,14 +1330,20 @@ def detect_liquidity_sweeps(
                 "source_time": s["time"]
             })
 
+        # EQH/EQL must be formed from swings that already existed.
+        targets_high.extend(historical_equal_high_levels(prior_highs))
+        targets_low.extend(historical_equal_low_levels(prior_lows))
+
         # Previous-day high/low are valid only after that day is complete.
         pdh, pdl = _previous_day_levels_for_candle(closed, i)
+
         if pdh is not None:
             targets_high.append({
                 "price": pdh,
                 "type": "PDH",
                 "source_time": None
             })
+
         if pdl is not None:
             targets_low.append({
                 "price": pdl,
@@ -1272,28 +1351,86 @@ def detect_liquidity_sweeps(
                 "source_time": None
             })
 
-        # De-duplicate very close liquidity levels.
-        seen_high = set()
-        unique_highs = []
-        for target in sorted(targets_high, key=lambda x: x["price"]):
-            key = round(target["price"], 6)
-            if key not in seen_high:
-                seen_high.add(key)
-                unique_highs.append(target)
+        # De-duplicate same-type/near-identical levels while preserving
+        # the liquidity type. EQH/EQL remain separate from ordinary BSL/SSL.
+        def dedupe_targets(targets):
+            unique = []
 
-        seen_low = set()
-        unique_lows = []
-        for target in sorted(targets_low, key=lambda x: x["price"]):
-            key = round(target["price"], 6)
-            if key not in seen_low:
-                seen_low.add(key)
-                unique_lows.append(target)
+            for target in sorted(
+                targets,
+                key=lambda x: (x["price"], x["type"])
+            ):
+                duplicate = False
+
+                for existing in unique:
+                    same_type = existing["type"] == target["type"]
+                    close_level = prices_are_equal(
+                        existing["price"],
+                        target["price"]
+                    )
+
+                    if same_type and close_level:
+                        duplicate = True
+                        break
+
+                if not duplicate:
+                    unique.append(target)
+
+            return unique
+
+        unique_highs = dedupe_targets(targets_high)
+        unique_lows = dedupe_targets(targets_low)
+
+        # -----------------------------------------------------
+        # POI helper
+        # -----------------------------------------------------
+        def find_historical_poi(direction):
+            candidates = []
+
+            for poi in all_pois:
+                if poi.get("direction") != direction:
+                    continue
+
+                poi_time = poi.get("time")
+
+                # Critical anti-lookahead rule:
+                # the POI must already exist by the sweep candle.
+                if poi_time is not None and poi_time > candle_time:
+                    continue
+
+                candle_touches_poi = (
+                    high >= float(poi["lower"])
+                    and low <= float(poi["upper"])
+                )
+
+                if not candle_touches_poi:
+                    continue
+
+                candidates.append(poi)
+
+            if not candidates:
+                return None
+
+            # Prefer the most relevant historical POI:
+            # 1) fresh-at-current-time if available
+            # 2) higher score if available
+            # 3) newest POI that already existed at sweep time
+            candidates.sort(
+                key=lambda p: (
+                    bool(p.get("fresh", False)),
+                    float(p.get("score", 0)),
+                    p.get("time")
+                ),
+                reverse=True
+            )
+
+            return candidates[0]
 
         # -----------------------------------------------------
         # BEARISH SWEEP — buy-side liquidity taken, close back below
         # -----------------------------------------------------
         for target in unique_highs:
-            level = target["price"]
+            level = float(target["price"])
 
             if high > level and close < level:
                 penetration_pct = (high - level) / level * 100
@@ -1301,7 +1438,9 @@ def detect_liquidity_sweeps(
                 if penetration_pct < SWEEP_MIN_PENETRATION_PCT:
                     continue
 
-                sweep = {
+                historical_poi = find_historical_poi("BEARISH")
+
+                sweeps.append({
                     "direction": "BEARISH",
                     "liquidity": target["type"],
                     "level": level,
@@ -1309,38 +1448,18 @@ def detect_liquidity_sweeps(
                     "low": low,
                     "close": close,
                     "penetration_pct": penetration_pct,
-                    "time": candle["time"],
+                    "time": candle_time,
                     "candle_index": i,
-                    "poi_interaction": False,
-                    "poi": None
-                }
-
-                # Does the sweep candle actually trade into a preferred POI?
-                for poi in preferred_pois:
-                    if poi.get("direction") != "BEARISH":
-                        continue
-
-                    # STRICT POI interaction:
-                    # The sweep candle itself must actually trade into
-                    # the POI zone. Being merely close to the POI is NOT
-                    # enough to mark interaction.
-                    candle_touches_poi = (
-                        high >= poi["lower"] and
-                        low <= poi["upper"]
-                    )
-
-                    if candle_touches_poi:
-                        sweep["poi_interaction"] = True
-                        sweep["poi"] = poi
-                        break
-
-                sweeps.append(sweep)
+                    "age_candles": 0,
+                    "poi_interaction": historical_poi is not None,
+                    "poi": historical_poi
+                })
 
         # -----------------------------------------------------
         # BULLISH SWEEP — sell-side liquidity taken, close back above
         # -----------------------------------------------------
         for target in unique_lows:
-            level = target["price"]
+            level = float(target["price"])
 
             if low < level and close > level:
                 penetration_pct = (level - low) / level * 100
@@ -1348,7 +1467,9 @@ def detect_liquidity_sweeps(
                 if penetration_pct < SWEEP_MIN_PENETRATION_PCT:
                     continue
 
-                sweep = {
+                historical_poi = find_historical_poi("BULLISH")
+
+                sweeps.append({
                     "direction": "BULLISH",
                     "liquidity": target["type"],
                     "level": level,
@@ -1356,63 +1477,85 @@ def detect_liquidity_sweeps(
                     "low": low,
                     "close": close,
                     "penetration_pct": penetration_pct,
-                    "time": candle["time"],
+                    "time": candle_time,
                     "candle_index": i,
-                    "poi_interaction": False,
-                    "poi": None
-                }
+                    "age_candles": 0,
+                    "poi_interaction": historical_poi is not None,
+                    "poi": historical_poi
+                })
 
-                for poi in preferred_pois:
-                    if poi.get("direction") != "BULLISH":
-                        continue
+    # Age is measured from the latest fully closed candle.
+    latest_closed_index = len(closed) - 1
 
-                    # STRICT POI interaction:
-                    # The sweep candle itself must actually trade into
-                    # the POI zone. Being merely close to the POI is NOT
-                    # enough to mark interaction.
-                    candle_touches_poi = (
-                        high >= poi["lower"] and
-                        low <= poi["upper"]
-                    )
+    for sweep in sweeps:
+        sweep["age_candles"] = max(
+            0,
+            latest_closed_index - int(sweep["candle_index"])
+        )
+        sweep["active"] = (
+            sweep["age_candles"] <= SWEEP_ACTIVE_MAX_AGE
+        )
 
-                    if candle_touches_poi:
-                        sweep["poi_interaction"] = True
-                        sweep["poi"] = poi
-                        break
+    # Newest first.
+    sweeps.sort(
+        key=lambda x: (
+            x["time"],
+            -x["penetration_pct"]
+        ),
+        reverse=True
+    )
 
-                sweeps.append(sweep)
-
-    # Newest first, then keep a compact diagnostic set.
-    sweeps.sort(key=lambda x: x["time"], reverse=True)
     return sweeps[:10]
 
 
+
 def get_step5_status(sweeps, bias, preferred_pois=None):
-    """Summarise the latest sweep without treating it as an entry."""
+    """
+    Summarise Step 5 while separating an ACTIVE sweep from an old
+    historical sweep. This prevents a 20-30 candle-old sweep from
+    being carried forward into a new displacement/retest sequence.
+    """
     preferred_pois = preferred_pois or []
 
     if not sweeps:
         return {
             "status": "NO CONFIRMED SWEEP",
             "latest": None,
+            "latest_any": None,
             "bias_aligned": False,
             "poi_aligned": False
         }
 
-    latest = sweeps[0]
+    latest_any = sweeps[0]
+    active_sweeps = [
+        s for s in sweeps
+        if s.get("active", False)
+    ]
+
+    if not active_sweeps:
+        return {
+            "status": "STALE SWEEP — NO ACTIVE SWEEP",
+            "latest": None,
+            "latest_any": latest_any,
+            "bias_aligned": False,
+            "poi_aligned": False
+        }
+
+    latest = active_sweeps[0]
     bias_aligned = latest["direction"] == bias
     poi_aligned = bool(latest.get("poi_interaction"))
 
     if bias_aligned and poi_aligned:
-        status = "SWEEP + ACTUAL POI INTERACTION"
+        status = "ACTIVE SWEEP + ACTUAL POI INTERACTION"
     elif bias_aligned:
-        status = "BIAS-ALIGNED SWEEP"
+        status = "ACTIVE BIAS-ALIGNED SWEEP"
     else:
-        status = "COUNTER-BIAS SWEEP"
+        status = "ACTIVE COUNTER-BIAS SWEEP"
 
     return {
         "status": status,
         "latest": latest,
+        "latest_any": latest_any,
         "bias_aligned": bias_aligned,
         "poi_aligned": poi_aligned
     }
@@ -1599,6 +1742,15 @@ preferred_pois, nearest_pois = select_relevant_pois(
     df=df
 )
 
+# All detected POIs are kept separately for historical Step 5 analysis.
+# This prevents current-time freshness filtering from creating a
+# look-ahead error when we evaluate an older sweep.
+all_pois = (
+    [{**x, "category": "FVG"} for x in fvgs]
+    + [{**x, "category": "ORDER BLOCK"} for x in order_blocks]
+    + [{**x, "category": "SUPPLY/DEMAND"} for x in supply_demand]
+)
+
 # =========================================================
 # STEP 5 — LIQUIDITY SWEEP
 # =========================================================
@@ -1607,7 +1759,8 @@ sweeps = detect_liquidity_sweeps(
     df,
     swing_highs,
     swing_lows,
-    preferred_pois=preferred_pois
+    preferred_pois=preferred_pois,
+    all_pois=all_pois
 )
 
 step5 = get_step5_status(
@@ -1711,9 +1864,19 @@ if step5["latest"]:
     print(f"Close Back: ${sweep['close']:.4f}")
     print(f"Penetration: {sweep['penetration_pct']:.3f}%")
     print(f"POI Interaction: {'YES' if sweep['poi_interaction'] else 'NO'}")
+    print(f"Age: {sweep['age_candles']} closed candle(s)")
+    print(f"Active Window: {'YES' if sweep['active'] else 'NO'}")
     print(f"Time: {sweep['time']}")
 else:
-    print("No confirmed liquidity sweep in recent closed candles.")
+    if step5.get("latest_any"):
+        stale = step5["latest_any"]
+        print(
+            f"Latest historical sweep: {stale['direction']} "
+            f"{stale['liquidity']} @ ${stale['level']:.4f} | "
+            f"Age: {stale['age_candles']} candles"
+        )
+    else:
+        print("No confirmed liquidity sweep in recent closed candles.")
 
 # =========================================================
 # DISCORD MESSAGE
@@ -1879,17 +2042,30 @@ if step5["latest"]:
         f"Close Back: `${sweep['close']:.4f}`\n"
         f"Penetration: `{sweep['penetration_pct']:.3f}%`\n"
         f"POI Interaction: **{poi_text}**\n"
+        f"Age: `{sweep['age_candles']} closed candle(s)`\n"
+        f"Active Window: **{'YES' if sweep['active'] else 'NO'}**\n"
         f"Time: `{sweep['time']}`\n"
     )
 
     if sweep.get("poi") is not None:
         poi = sweep["poi"]
+        poi_time = poi.get("time")
         message += (
             f"POI Zone: `${poi['lower']:.4f}` - `${poi['upper']:.4f}`\n"
             f"POI Type: `{poi['category']} / {poi['type']}`\n"
+            f"POI Created: `{poi_time}`\n"
         )
 else:
-    message += "No confirmed liquidity sweep in recent closed candles.\n"
+    if step5.get("latest_any"):
+        stale = step5["latest_any"]
+        message += (
+            f"Latest historical sweep: `{stale['direction']} "
+            f"{stale['liquidity']} @ ${stale['level']:.4f}`\n"
+            f"Age: `{stale['age_candles']} closed candle(s)`\n"
+            "⚠️ No active Step 5 sweep inside the current sweep window.\n"
+        )
+    else:
+        message += "No confirmed liquidity sweep in recent closed candles.\n"
 
 message += (
     "\n⚠️ **POI STATUS IS NOT AN ENTRY SIGNAL**\n"
