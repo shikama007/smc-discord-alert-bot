@@ -6,21 +6,7 @@ import os
 # SETTINGS
 # =========================================================
 
-# =========================================================
-# USER SETTINGS
-# =========================================================
-# Enter any MEXC Futures perpetual symbol here.
-# Examples:
-#   LTC_USDT
-#   BTC_USDT
-#   ETH_USDT
-#   SOL_USDT
-#
-# TradingView style display is generated automatically:
-# LTC_USDT -> LTCUSDT.P
-# BTC_USDT -> BTCUSDT.P
-
-SYMBOL = "BTC_USDT"
+SYMBOL = "LTC_USDT"
 TIMEFRAME = "Min60"
 CANDLE_LIMIT = 200
 
@@ -37,15 +23,7 @@ POI_NEAR_PCT = 0.50           # current price considered "near" POI within 0.50%
 
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
-DISPLAY_SYMBOL = SYMBOL.upper().replace("-", "_")
-
-if not DISPLAY_SYMBOL.endswith("_USDT"):
-    raise ValueError(
-        "SYMBOL must use MEXC Futures format, e.g. BTC_USDT, LTC_USDT, ETH_USDT"
-    )
-
-DISPLAY_SYMBOL = DISPLAY_SYMBOL.replace("_USDT", "USDT") + ".P"
-SYMBOL = SYMBOL.upper().replace("-", "_")
+DISPLAY_SYMBOL = SYMBOL.replace("_USDT", "USDT") + ".P"
 
 
 # =========================================================
@@ -709,48 +687,33 @@ def select_relevant_pois(
 # =========================================================
 
 def send_discord_message(message):
-    """
-    Send a Discord message safely.
-
-    Discord normal webhook messages have a 2000-character limit.
-    This function splits long reports into multiple messages while
-    trying to split at newline boundaries.
-    """
     if not WEBHOOK_URL:
         raise RuntimeError("DISCORD_WEBHOOK_URL secret not found!")
 
-    MAX_LENGTH = 1900  # Keep a small safety margin below Discord's 2000 limit.
+    # Discord message limit = 2000 characters.
+    max_length = 1900
     chunks = []
-    remaining = message
 
-    while len(remaining) > MAX_LENGTH:
-        split_at = remaining.rfind("\n", 0, MAX_LENGTH)
+    while len(message) > max_length:
+        split_at = message.rfind("\n", 0, max_length)
+        if split_at == -1:
+            split_at = max_length
+        chunks.append(message[:split_at])
+        message = message[split_at:].lstrip()
 
-        # If there is no newline before the limit, split at the limit.
-        if split_at <= 0:
-            split_at = MAX_LENGTH
-
-        chunks.append(remaining[:split_at])
-        remaining = remaining[split_at:].lstrip()
-
-    if remaining:
-        chunks.append(remaining)
-
-    total = len(chunks)
+    if message:
+        chunks.append(message)
 
     for number, chunk in enumerate(chunks, start=1):
-        payload = {"content": chunk}
-
         response = requests.post(
             WEBHOOK_URL,
-            json=payload,
+            json={"content": chunk},
             timeout=10
         )
 
         print(
-            f"📡 Discord message {number}/{total} "
-            f"→ HTTP {response.status_code} "
-            f"({len(chunk)} chars)"
+            f"📡 Discord message {number}/{len(chunks)} "
+            f"→ {response.status_code}"
         )
 
         if response.status_code not in (200, 204):
@@ -758,7 +721,7 @@ def send_discord_message(message):
             print(response.text)
             response.raise_for_status()
 
-    print(f"✅ Discord alert sent successfully! ({total} message(s))")
+    print(f"✅ Discord alert sent ({len(chunks)} message(s))!")
 
 
 
@@ -1085,6 +1048,279 @@ def select_relevant_pois(
 
 
 # =========================================================
+# STEP 5 — LIQUIDITY SWEEP DETECTION
+# =========================================================
+# A sweep is treated as a wick through a pre-existing liquidity level
+# followed by a close back through that level.
+#
+# Bearish sweep:
+#   high > BSL/EQH/PDH and close < the level
+#
+# Bullish sweep:
+#   low < SSL/EQL/PDL and close > the level
+#
+# IMPORTANT:
+# - Only fully closed candles are analysed.
+# - The liquidity level must already exist before the sweep candle.
+# - A sweep is NOT an entry signal.
+# - POI interaction is reported separately; Step 6 will validate
+#   displacement after a confirmed sweep.
+
+SWEEP_LOOKBACK = 30
+SWEEP_MIN_PENETRATION_PCT = 0.02
+SWEEP_POI_NEAR_PCT = 0.50
+
+
+def _previous_day_levels_for_candle(closed_df, candle_index):
+    """Return the previous calendar day's high/low for this candle."""
+    if candle_index <= 0:
+        return None, None
+
+    candle_date = closed_df.iloc[candle_index]["time"].date()
+    previous_rows = closed_df[closed_df["time"].dt.date < candle_date]
+
+    if previous_rows.empty:
+        return None, None
+
+    previous_date = previous_rows["time"].dt.date.max()
+    previous_day = previous_rows[previous_rows["time"].dt.date == previous_date]
+
+    if previous_day.empty:
+        return None, None
+
+    return (
+        float(previous_day["high"].max()),
+        float(previous_day["low"].min())
+    )
+
+
+def _level_touched(price, level, direction):
+    if level is None or level <= 0:
+        return False
+
+    penetration = abs(price - level) / level * 100
+
+    if penetration < SWEEP_MIN_PENETRATION_PCT:
+        return False
+
+    if direction == "BEARISH":
+        return price > level
+    return price < level
+
+
+def detect_liquidity_sweeps(
+    df,
+    swing_highs,
+    swing_lows,
+    preferred_pois=None,
+    lookback=SWEEP_LOOKBACK
+):
+    """
+    Detect confirmed liquidity sweeps from closed candles.
+
+    Each sweep is linked to a liquidity level that existed before the
+    sweep candle. This avoids using future swing information.
+    """
+    closed = df.iloc[:-1].copy().reset_index(drop=True)
+
+    if closed.empty:
+        return []
+
+    start = max(0, len(closed) - lookback)
+    sweeps = []
+    preferred_pois = preferred_pois or []
+
+    for i in range(start, len(closed)):
+        candle = closed.iloc[i]
+        high = float(candle["high"])
+        low = float(candle["low"])
+        close = float(candle["close"])
+
+        # Only levels confirmed/known before this candle are eligible.
+        prior_highs = [
+            s for s in swing_highs
+            if s["index"] < i
+        ]
+        prior_lows = [
+            s for s in swing_lows
+            if s["index"] < i
+        ]
+
+        targets_high = []
+        targets_low = []
+
+        for s in prior_highs:
+            targets_high.append({
+                "price": float(s["price"]),
+                "type": "BSL",
+                "source_time": s["time"]
+            })
+
+        for s in prior_lows:
+            targets_low.append({
+                "price": float(s["price"]),
+                "type": "SSL",
+                "source_time": s["time"]
+            })
+
+        # Previous-day high/low are valid only after that day is complete.
+        pdh, pdl = _previous_day_levels_for_candle(closed, i)
+        if pdh is not None:
+            targets_high.append({
+                "price": pdh,
+                "type": "PDH",
+                "source_time": None
+            })
+        if pdl is not None:
+            targets_low.append({
+                "price": pdl,
+                "type": "PDL",
+                "source_time": None
+            })
+
+        # De-duplicate very close liquidity levels.
+        seen_high = set()
+        unique_highs = []
+        for target in sorted(targets_high, key=lambda x: x["price"]):
+            key = round(target["price"], 6)
+            if key not in seen_high:
+                seen_high.add(key)
+                unique_highs.append(target)
+
+        seen_low = set()
+        unique_lows = []
+        for target in sorted(targets_low, key=lambda x: x["price"]):
+            key = round(target["price"], 6)
+            if key not in seen_low:
+                seen_low.add(key)
+                unique_lows.append(target)
+
+        # -----------------------------------------------------
+        # BEARISH SWEEP — buy-side liquidity taken, close back below
+        # -----------------------------------------------------
+        for target in unique_highs:
+            level = target["price"]
+
+            if high > level and close < level:
+                penetration_pct = (high - level) / level * 100
+
+                if penetration_pct < SWEEP_MIN_PENETRATION_PCT:
+                    continue
+
+                sweep = {
+                    "direction": "BEARISH",
+                    "liquidity": target["type"],
+                    "level": level,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                    "penetration_pct": penetration_pct,
+                    "time": candle["time"],
+                    "candle_index": i,
+                    "poi_interaction": False,
+                    "poi": None
+                }
+
+                # Does the sweep candle actually trade into a preferred POI?
+                for poi in preferred_pois:
+                    if poi.get("direction") != "BEARISH":
+                        continue
+
+                    candle_touches_poi = (
+                        high >= poi["lower"] and low <= poi["upper"]
+                    )
+
+                    poi_distance = distance_to_zone_pct(high, poi)
+                    near_poi = poi_distance <= SWEEP_POI_NEAR_PCT
+
+                    if candle_touches_poi or near_poi:
+                        sweep["poi_interaction"] = True
+                        sweep["poi"] = poi
+                        break
+
+                sweeps.append(sweep)
+
+        # -----------------------------------------------------
+        # BULLISH SWEEP — sell-side liquidity taken, close back above
+        # -----------------------------------------------------
+        for target in unique_lows:
+            level = target["price"]
+
+            if low < level and close > level:
+                penetration_pct = (level - low) / level * 100
+
+                if penetration_pct < SWEEP_MIN_PENETRATION_PCT:
+                    continue
+
+                sweep = {
+                    "direction": "BULLISH",
+                    "liquidity": target["type"],
+                    "level": level,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                    "penetration_pct": penetration_pct,
+                    "time": candle["time"],
+                    "candle_index": i,
+                    "poi_interaction": False,
+                    "poi": None
+                }
+
+                for poi in preferred_pois:
+                    if poi.get("direction") != "BULLISH":
+                        continue
+
+                    candle_touches_poi = (
+                        high >= poi["lower"] and low <= poi["upper"]
+                    )
+
+                    poi_distance = distance_to_zone_pct(low, poi)
+                    near_poi = poi_distance <= SWEEP_POI_NEAR_PCT
+
+                    if candle_touches_poi or near_poi:
+                        sweep["poi_interaction"] = True
+                        sweep["poi"] = poi
+                        break
+
+                sweeps.append(sweep)
+
+    # Newest first, then keep a compact diagnostic set.
+    sweeps.sort(key=lambda x: x["time"], reverse=True)
+    return sweeps[:10]
+
+
+def get_step5_status(sweeps, bias, preferred_pois=None):
+    """Summarise the latest sweep without treating it as an entry."""
+    preferred_pois = preferred_pois or []
+
+    if not sweeps:
+        return {
+            "status": "NO CONFIRMED SWEEP",
+            "latest": None,
+            "bias_aligned": False,
+            "poi_aligned": False
+        }
+
+    latest = sweeps[0]
+    bias_aligned = latest["direction"] == bias
+    poi_aligned = bool(latest.get("poi_interaction"))
+
+    if bias_aligned and poi_aligned:
+        status = "SWEEP + POI INTERACTION"
+    elif bias_aligned:
+        status = "BIAS-ALIGNED SWEEP"
+    else:
+        status = "COUNTER-BIAS SWEEP"
+
+    return {
+        "status": status,
+        "latest": latest,
+        "bias_aligned": bias_aligned,
+        "poi_aligned": poi_aligned
+    }
+
+
+# =========================================================
 # DEVELOPING / UNCONFIRMED SWING CONTEXT
 # =========================================================
 # Confirmed swings require right-side candle confirmation.
@@ -1263,6 +1499,23 @@ preferred_pois, nearest_pois = select_relevant_pois(
 )
 
 # =========================================================
+# STEP 5 — LIQUIDITY SWEEP
+# =========================================================
+
+sweeps = detect_liquidity_sweeps(
+    df,
+    swing_highs,
+    swing_lows,
+    preferred_pois=preferred_pois
+)
+
+step5 = get_step5_status(
+    sweeps,
+    structure["bias"],
+    preferred_pois=preferred_pois
+)
+
+# =========================================================
 # TERMINAL
 # =========================================================
 
@@ -1342,6 +1595,24 @@ print(f"Raw FVGs: {len(fvgs)}")
 print(f"Raw OBs: {len(order_blocks)}")
 print(f"Raw Supply/Demand: {len(supply_demand)}")
 print(f"Final quality POIs: {len(preferred_pois)}")
+
+print()
+print("🧹 STEP 5 — LIQUIDITY SWEEP")
+print(f"Status: {step5['status']}")
+
+if step5["latest"]:
+    sweep = step5["latest"]
+    print(f"Direction: {sweep['direction']}")
+    print(f"Liquidity: {sweep['liquidity']}")
+    print(f"Level: ${sweep['level']:.4f}")
+    print(f"Sweep High: ${sweep['high']:.4f}")
+    print(f"Sweep Low: ${sweep['low']:.4f}")
+    print(f"Close Back: ${sweep['close']:.4f}")
+    print(f"Penetration: {sweep['penetration_pct']:.3f}%")
+    print(f"POI Interaction: {'YES' if sweep['poi_interaction'] else 'NO'}")
+    print(f"Time: {sweep['time']}")
+else:
+    print("No confirmed liquidity sweep in recent closed candles.")
 
 # =========================================================
 # DISCORD MESSAGE
@@ -1490,6 +1761,27 @@ message += (
 )
 
 message += (
+    "\n🧹 **STEP 5 — LIQUIDITY SWEEP**\n"
+    f"Status: **{step5['status']}**\n"
+)
+
+if step5["latest"]:
+    sweep = step5["latest"]
+    poi_text = "YES" if sweep["poi_interaction"] else "NO"
+    message += (
+        f"Direction: **{sweep['direction']}**\n"
+        f"Liquidity: `{sweep['liquidity']}`\n"
+        f"Level: `${sweep['level']:.4f}`\n"
+        f"Sweep High/Low: `${sweep['high']:.4f}` / `${sweep['low']:.4f}`\n"
+        f"Close Back: `${sweep['close']:.4f}`\n"
+        f"Penetration: `{sweep['penetration_pct']:.3f}%`\n"
+        f"POI Interaction: **{poi_text}**\n"
+        f"Time: `{sweep['time']}`\n"
+    )
+else:
+    message += "No confirmed liquidity sweep in recent closed candles.\n"
+
+message += (
     "\n⚠️ **POI STATUS IS NOT AN ENTRY SIGNAL**\n"
     "Sweep + Displacement + CHOCH/BOS + Retest "
     "are still required.\n\n"
@@ -1501,6 +1793,7 @@ message += (
     "✅ FVG\n"
     "✅ Order Block\n"
     "✅ Supply/Demand\n"
+    "✅ Liquidity Sweep (Step 5)\n"
 )
 
 print()
