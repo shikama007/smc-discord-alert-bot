@@ -23,4 +23,4 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }} 
 
-        run: python smc_engine_step6_displacement.py
+      run: python smc_engine_step6_step5_output_fix.py
