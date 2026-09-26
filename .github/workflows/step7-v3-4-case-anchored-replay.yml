@@ -1,0 +1,26 @@
+name: SMC Step 7 V3.4 Case-Anchored Replay
+
+on:
+  workflow_dispatch:
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests pandas
+
+      - run: python validate_step7_v3_4_lifecycle.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: step7-v3-4-case-anchored-replay
+          path: |
+            step7_v3_4_lifecycle_cases.csv
+            step7_v3_4_lifecycle_snapshots.csv
