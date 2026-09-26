@@ -1,0 +1,32 @@
+name: SMC Step 9.1 15M 5M Component Diagnostic
+
+on:
+  workflow_dispatch:
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests pandas
+
+      - name: Run Step 9.1 component diagnostic
+        run: python validate_step9_1_15m_5m_component_replay.py
+
+      - name: Upload Step 9.1 reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: step9-1-15m-5m-component-diagnostic
+          path: |
+            step9_1_component_cases.csv
+            step9_1_component_matrix.csv
+            step9_1_component_summary.csv
