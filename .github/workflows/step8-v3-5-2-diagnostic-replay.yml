@@ -1,0 +1,31 @@
+name: SMC Step 8 V3.5.2 Diagnostic Replay
+
+on:
+  workflow_dispatch:
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests pandas
+
+      - name: Run Step 8 V3.5.2 diagnostic replay
+        run: python validate_step8_v3_5_2_diagnostic_replay.py
+
+      - name: Upload Step 8 diagnostic reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: step8-v3-5-2-diagnostic-replay
+          path: |
+            step8_v3_5_2_diagnostic_cases.csv
+            step8_v3_5_2_diagnostic_candles.csv
