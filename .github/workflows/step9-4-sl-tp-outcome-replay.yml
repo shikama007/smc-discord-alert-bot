@@ -1,0 +1,35 @@
+name: Step 9.4 SL TP Outcome Replay
+
+on:
+  workflow_dispatch:
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas
+
+      - name: Run Step 9.4
+        run: |
+          python validate_step9_4_sl_tp_outcome_replay.py
+
+      - name: Upload Step 9.4 results
+        uses: actions/upload-artifact@v4
+        with:
+          name: step9-4-results
+          path: |
+            step9_4_sl_tp_outcome_cases.csv
+            step9_4_sl_tp_outcome_summary.csv
+          if-no-files-found: error
