@@ -6,7 +6,7 @@ import os
 # SETTINGS
 # =========================================================
 
-SYMBOL = "PHA_USDT"
+SYMBOL = "LTC_USDT"
 TIMEFRAME = "Min60"
 CANDLE_LIMIT = 200
 
