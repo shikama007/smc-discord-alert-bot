@@ -1,0 +1,31 @@
+name: SMC Step 5-7 Replay Validation V5.1 DEBUG
+
+on:
+  workflow_dispatch:
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests pandas
+
+      - name: Run V5.1 debug replay
+        run: python validate_step5_step7_replay_v5_1_debug.py
+
+      - name: Upload V5.1 debug reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: step5-step7-replay-v5-1-debug
+          path: |
+            step5_step7_replay_v5_cases.csv
+            step5_step7_replay_v5_candidates.csv
