@@ -1,0 +1,29 @@
+name: SMC Step 5-8 Replay Validation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests pandas
+
+      - name: Run historical Step 5-8 replay
+        run: python validate_step5_step8_replay.py
+
+      - name: Upload replay report
+        uses: actions/upload-artifact@v4
+        with:
+          name: step5-step8-replay-report
+          path: step5_step8_replay_report.csv
