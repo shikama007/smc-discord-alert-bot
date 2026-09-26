@@ -1,0 +1,31 @@
+name: SMC Step 7 V3.2 Production Fetch Replay
+
+on:
+  workflow_dispatch:
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests pandas
+
+      - name: Run Step 7 V3.2 replay
+        run: python validate_step7_v3_2_lifecycle.py
+
+      - name: Upload V3.2 lifecycle reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: step7-v3-2-production-fetch-replay
+          path: |
+            step7_v3_2_lifecycle_cases.csv
+            step7_v3_2_lifecycle_snapshots.csv
