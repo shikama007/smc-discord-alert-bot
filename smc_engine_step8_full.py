@@ -1945,96 +1945,332 @@ def get_step6_status(df, step5, bias):
 
 
 # =========================================================
-# STEP 7 — POST-DISPLACEMENT CHOCH / BOS
+# STEP 7 V2 — POST-DISPLACEMENT INTERNAL STRUCTURE BREAK
 # =========================================================
-# Strict sequence: Sweep → Displacement → Internal Structure Break.
-# Only closed candles are used. Historical BOS/CHOCH events are not
-# reused as Step 7 confirmation. Wick-only breaks do not count.
+# Production-safe sequence:
+#
+#   Sweep -> Confirmed Displacement -> Post-displacement Swing Forms
+#        -> Right-side candles CLOSE -> Swing Confirmed -> BOS
+#
+# Important:
+# - Only fully closed candles are used.
+# - A developing swing is NEVER treated as a confirmed level.
+# - A swing is allowed to form AFTER displacement.
+# - Its confirmation timestamp is the point at which the required
+#   right-side candles have actually closed.
+# - BOS can only happen on a CLOSED candle AFTER swing confirmation.
+# - No future candles are used to signal an earlier event.
+# - Historical BOS/CHOCH events are not reused as Step 7 confirmation.
+# - Wick-only breaks do not count; the candle must close beyond the level.
+# =========================================================
 
-STEP7_LOOKAHEAD = 6
 STEP7_SWING_STRENGTH = 2
+# Maximum number of closed candles allowed after displacement for a
+# post-displacement internal swing to become the active Step 7 setup.
+# This is deliberately longer than the old 6-candle window because the
+# V5.2 replay showed valid confirmed swings developing well after the
+# displacement candle.
+STEP7_MAX_BARS_AFTER_DISPLACEMENT = 48
 
-def _find_post_sweep_internal_levels(closed, sweep_index, displacement_index, direction, strength=STEP7_SWING_STRENGTH):
+# Once a post-displacement swing is confirmed, allow a reasonable number
+# of subsequent CLOSED candles for the structure break.
+STEP7_MAX_BARS_AFTER_SWING_CONFIRMATION = 48
+
+
+def _find_post_displacement_confirmed_swings(
+    closed,
+    sweep_index,
+    displacement_index,
+    direction,
+    strength=STEP7_SWING_STRENGTH,
+):
+    """Return only post-displacement swings whose right-side candles are closed."""
     if displacement_index <= sweep_index:
         return []
-    start = max(strength, sweep_index + 1)
-    end = min(displacement_index, len(closed) - strength)
+
+    if direction not in ("BULLISH", "BEARISH"):
+        return []
+
+    start = max(displacement_index + 1, strength)
+    last_confirmable_index = min(
+        len(closed) - strength - 1,
+        displacement_index + STEP7_MAX_BARS_AFTER_DISPLACEMENT,
+    )
+
+    if last_confirmable_index < start:
+        return []
+
     levels = []
-    if end <= start:
-        return levels
-    for i in range(start, end):
+
+    for i in range(start, last_confirmable_index + 1):
         current_high = float(closed.loc[i, "high"])
         current_low = float(closed.loc[i, "low"])
-        left_highs = closed.loc[i-strength:i-1, "high"]
-        right_highs = closed.loc[i+1:i+strength, "high"]
-        left_lows = closed.loc[i-strength:i-1, "low"]
-        right_lows = closed.loc[i+1:i+strength, "low"]
-        if direction == "BULLISH" and current_high > left_highs.max() and current_high > right_highs.max():
-            levels.append({"type":"SWING HIGH", "direction":"BULLISH", "price":current_high, "index":i, "time":closed.loc[i,"time"]})
-        elif direction == "BEARISH" and current_low < left_lows.min() and current_low < right_lows.min():
-            levels.append({"type":"SWING LOW", "direction":"BEARISH", "price":current_low, "index":i, "time":closed.loc[i,"time"]})
+
+        left_highs = closed.loc[i - strength:i - 1, "high"]
+        right_highs = closed.loc[i + 1:i + strength, "high"]
+        left_lows = closed.loc[i - strength:i - 1, "low"]
+        right_lows = closed.loc[i + 1:i + strength, "low"]
+
+        if direction == "BULLISH":
+            is_swing = (
+                current_high > float(left_highs.max())
+                and current_high > float(right_highs.max())
+            )
+            level_type = "SWING HIGH"
+            price = current_high
+        else:
+            is_swing = (
+                current_low < float(left_lows.min())
+                and current_low < float(right_lows.min())
+            )
+            level_type = "SWING LOW"
+            price = current_low
+
+        if not is_swing:
+            continue
+
+        confirmation_index = i + strength
+        levels.append({
+            "type": level_type,
+            "direction": direction,
+            "price": price,
+            "index": i,
+            "time": closed.loc[i, "time"],
+            "confirmation_index": confirmation_index,
+            "confirmation_time": closed.loc[confirmation_index, "time"],
+            "confirmation_bars": strength,
+        })
+
     return levels
 
-def detect_post_displacement_structure_break(df, sweep, displacement):
-    if sweep is None:
-        return {"status":"WAITING FOR SWEEP", "confirmed":False, "event":None, "level":None, "candle":None}
-    if not displacement or not displacement.get("confirmed"):
-        return {"status":"WAITING FOR CONFIRMED DISPLACEMENT", "confirmed":False, "event":None, "level":None, "candle":None}
 
+def detect_post_displacement_structure_break_v2(df, sweep, displacement):
+    """Production-safe Step 7 V2 detector with no lookahead."""
+    if sweep is None:
+        return {
+            "status": "WAITING FOR SWEEP",
+            "confirmed": False,
+            "event": None,
+            "level": None,
+            "candle": None,
+        }
+
+    if not displacement or not displacement.get("confirmed"):
+        return {
+            "status": "WAITING FOR CONFIRMED DISPLACEMENT",
+            "confirmed": False,
+            "event": None,
+            "level": None,
+            "candle": None,
+        }
+
+    if df is None or len(df) < 3:
+        return {
+            "status": "NO CLOSED CANDLES",
+            "confirmed": False,
+            "event": None,
+            "level": None,
+            "candle": None,
+        }
+
+    # The final row is the forming candle and is NEVER used downstream.
     closed = df.iloc[:-1].copy().reset_index(drop=True)
-    if closed.empty:
-        return {"status":"NO CLOSED CANDLES", "confirmed":False, "event":None, "level":None, "candle":None}
 
     sweep_index = int(sweep.get("candle_index", -1))
     displacement_candle = displacement.get("candle")
-    if displacement_candle is None:
-        return {"status":"NO DISPLACEMENT CANDLE", "confirmed":False, "event":None, "level":None, "candle":None}
 
-    matches = closed.index[closed["time"] == displacement_candle.get("time")].tolist()
+    if displacement_candle is None:
+        return {
+            "status": "NO DISPLACEMENT CANDLE",
+            "confirmed": False,
+            "event": None,
+            "level": None,
+            "candle": None,
+        }
+
+    matches = closed.index[
+        closed["time"] == displacement_candle.get("time")
+    ].tolist()
+
     if not matches:
-        return {"status":"DISPLACEMENT CANDLE NOT FOUND", "confirmed":False, "event":None, "level":None, "candle":None}
+        return {
+            "status": "DISPLACEMENT CANDLE NOT FOUND",
+            "confirmed": False,
+            "event": None,
+            "level": None,
+            "candle": None,
+        }
 
     displacement_index = int(matches[-1])
     direction = displacement.get("direction")
+
     if direction not in ("BULLISH", "BEARISH"):
-        return {"status":"INVALID DISPLACEMENT DIRECTION", "confirmed":False, "event":None, "level":None, "candle":None}
+        return {
+            "status": "INVALID DISPLACEMENT DIRECTION",
+            "confirmed": False,
+            "event": None,
+            "level": None,
+            "candle": None,
+        }
 
-    internal_levels = _find_post_sweep_internal_levels(closed, sweep_index, displacement_index, direction)
-    if not internal_levels:
-        return {"status":"WAITING FOR INTERNAL SWING", "confirmed":False, "event":None, "level":None, "candle":None, "reason":"No confirmed internal swing formed after the sweep and before displacement."}
+    if displacement_index <= sweep_index:
+        return {
+            "status": "INVALID SWEEP/DISPLACEMENT ORDER",
+            "confirmed": False,
+            "event": None,
+            "level": None,
+            "candle": None,
+        }
 
-    level = internal_levels[-1]
-    level_price = float(level["price"])
-    start = displacement_index + 1
-    end = min(len(closed), start + STEP7_LOOKAHEAD)
-    if start >= end:
-        return {"status":"WAITING FOR STRUCTURE BREAK", "confirmed":False, "event":None, "level":level, "candle":None, "reason":"No closed candle after displacement is available yet."}
+    levels = _find_post_displacement_confirmed_swings(
+        closed,
+        sweep_index,
+        displacement_index,
+        direction,
+    )
 
-    for i in range(start, end):
-        candle = closed.iloc[i]
-        close = float(candle["close"])
-        broken = (direction == "BULLISH" and close > level_price) or (direction == "BEARISH" and close < level_price)
-        if broken:
+    if not levels:
+        if len(closed) <= displacement_index + STEP7_SWING_STRENGTH:
+            status = "WAITING FOR SWING CONFIRMATION"
+            reason = "Not enough CLOSED right-side candles to confirm a post-displacement swing yet."
+        elif len(closed) <= displacement_index + STEP7_MAX_BARS_AFTER_DISPLACEMENT:
+            status = "WAITING FOR POST-DISPLACEMENT SWING"
+            reason = "No confirmed internal swing has formed after displacement yet."
+        else:
+            status = "NO VALID POST-DISPLACEMENT SWING"
+            reason = "The Step 7 post-displacement swing window expired without a confirmed internal swing."
+
+        return {
+            "status": status,
+            "confirmed": False,
+            "event": None,
+            "level": None,
+            "candle": None,
+            "reason": reason,
+        }
+
+    # Evaluate levels chronologically. This preserves the actual sequence:
+    # swing forms -> right-side candles close -> swing becomes confirmed ->
+    # only THEN can a later candle break it.
+    levels = sorted(
+        levels,
+        key=lambda x: (int(x["confirmation_index"]), int(x["index"])),
+    )
+
+    current_last_closed_index = len(closed) - 1
+
+    for level in levels:
+        confirmation_index = int(level["confirmation_index"])
+        level_price = float(level["price"])
+
+        # Do not allow a break on or before the candle that confirmed the swing.
+        start = confirmation_index + 1
+        end = min(
+            current_last_closed_index + 1,
+            start + STEP7_MAX_BARS_AFTER_SWING_CONFIRMATION,
+        )
+
+        if start >= end:
+            continue
+
+        for i in range(start, end):
+            candle = closed.iloc[i]
+            close = float(candle["close"])
+
+            broken = (
+                direction == "BULLISH" and close > level_price
+            ) or (
+                direction == "BEARISH" and close < level_price
+            )
+
+            if not broken:
+                continue
+
             chosen = {
-                "index":i, "time":candle["time"], "direction":direction, "event":"BOS",
-                "level_type":level["type"], "broken_level":level_price,
-                "open":float(candle["open"]), "high":float(candle["high"]),
-                "low":float(candle["low"]), "close":close,
-                "break_method":"CLOSE ABOVE LEVEL" if direction == "BULLISH" else "CLOSE BELOW LEVEL"
+                "index": i,
+                "time": candle["time"],
+                "direction": direction,
+                "event": "BOS",
+                "level_type": level["type"],
+                "broken_level": level_price,
+                "open": float(candle["open"]),
+                "high": float(candle["high"]),
+                "low": float(candle["low"]),
+                "close": close,
+                "break_method": (
+                    "CLOSE ABOVE LEVEL"
+                    if direction == "BULLISH"
+                    else "CLOSE BELOW LEVEL"
+                ),
             }
-            return {"status":"STEP 7 — STRUCTURE BREAK CONFIRMED", "confirmed":True, "direction":direction, "event":"BOS", "level":level, "candle":chosen, "broken_level":level_price, "break_time":chosen["time"], "reason":chosen["break_method"]}
 
-    return {"status":"WAITING FOR STRUCTURE BREAK", "confirmed":False, "event":None, "level":level, "candle":None, "reason":"Internal swing exists, but no closed candle has broken it yet."}
+            return {
+                "status": "STEP 7 V2 — STRUCTURE BREAK CONFIRMED",
+                "confirmed": True,
+                "direction": direction,
+                "event": "BOS",
+                "level": level,
+                "broken_level": level_price,
+                "swing_time": level["time"],
+                "swing_index": int(level["index"]),
+                "swing_confirmation_time": level["confirmation_time"],
+                "swing_confirmation_index": confirmation_index,
+                "break_time": chosen["time"],
+                "candle": chosen,
+                "reason": chosen["break_method"],
+            }
+
+    # A confirmed swing exists, but no CLOSED candle has broken it yet.
+    latest_level = levels[-1]
+    latest_confirmation_index = int(latest_level["confirmation_index"])
+
+    if current_last_closed_index <= latest_confirmation_index:
+        status = "WAITING FOR STRUCTURE BREAK"
+        reason = "Swing is confirmed, but no CLOSED candle after confirmation is available yet."
+    else:
+        status = "WAITING FOR STRUCTURE BREAK"
+        reason = "Confirmed internal swing exists, but no CLOSED candle has broken the level yet."
+
+    return {
+        "status": status,
+        "confirmed": False,
+        "event": None,
+        "level": latest_level,
+        "candle": None,
+        "reason": reason,
+    }
+
 
 def get_step7_status(df, step5, step6):
     sweep = step5.get("latest") if step5 else None
+
     if sweep is None:
-        return {"status":"WAITING FOR ACTIVE SWEEP", "confirmed":False, "structure_break":None}
+        return {
+            "status": "WAITING FOR ACTIVE SWEEP",
+            "confirmed": False,
+            "structure_break": None,
+        }
+
     displacement = step6.get("displacement") if step6 else None
+
     if not displacement or not displacement.get("confirmed"):
-        return {"status":"WAITING FOR CONFIRMED DISPLACEMENT", "confirmed":False, "structure_break":None}
-    result = detect_post_displacement_structure_break(df, sweep, displacement)
-    return {"status":result["status"], "confirmed":result["confirmed"], "structure_break":result}
+        return {
+            "status": "WAITING FOR CONFIRMED DISPLACEMENT",
+            "confirmed": False,
+            "structure_break": None,
+        }
+
+    result = detect_post_displacement_structure_break_v2(
+        df,
+        sweep,
+        displacement,
+    )
+
+    return {
+        "status": result["status"],
+        "confirmed": result["confirmed"],
+        "structure_break": result,
+    }
 
 
 # =========================================================
