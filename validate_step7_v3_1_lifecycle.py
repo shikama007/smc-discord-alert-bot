@@ -7,6 +7,7 @@ Tracks each Step 6 case through later closed candles.
 import ast
 import requests
 import pandas as pd
+from pathlib import Path
 
 ENGINE_FILE = "smc_engine_step8_full.py"
 SYMBOL = "LTC_USDT"
