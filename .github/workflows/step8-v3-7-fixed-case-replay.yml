@@ -1,0 +1,31 @@
+name: SMC Step 8 V3.7 Fixed Case Replay
+
+on:
+  workflow_dispatch:
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests pandas
+
+      - name: Run Step 8 V3.7 fixed case replay
+        run: python validate_step8_v3_7_fixed_case_replay.py
+
+      - name: Upload V3.7 reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: step8-v3-7-fixed-case-replay
+          path: |
+            step8_v3_7_cases.csv
+            step8_v3_7_candles.csv
