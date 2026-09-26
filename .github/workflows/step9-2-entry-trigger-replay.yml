@@ -1,0 +1,31 @@
+name: SMC Step 9.2 Entry Trigger Replay
+
+on:
+  workflow_dispatch:
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests pandas
+
+      - name: Run Step 9.2 entry trigger replay
+        run: python validate_step9_2_entry_trigger_replay.py
+
+      - name: Upload Step 9.2 reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: step9-2-entry-trigger-replay
+          path: |
+            step9_2_entry_trigger_cases.csv
+            step9_2_entry_trigger_summary.csv
